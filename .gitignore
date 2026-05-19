@@ -1,0 +1,45 @@
+# Cargo build
+**/target
+**/prelibs*/**
+# Cargo config
+# .cargo
+**/build
+# Profile-guided optimization
+/tmp
+pgo-data.profdata
+
+# MacOS nuisances
+.DS_Store
+
+# IDEs
+/.idea
+
+# Proofs
+**/proof-with-pis.json
+**/proof-with-io.json
+
+# Env
+.env
+
+*.dump
+**/temp
+**/*.bin
+
+
+build*
+venv
+xcode
+*.code-workspace
+.DS_Store
+.idea
+.vscode
+.vs
+CMakeFiles
+cmake-build-*
+**conan2/
+**build/
+**deps/
+third_party/*/*/build/
+third_party/*/*/deps/
+.editorconfig
+.claude/worktrees
