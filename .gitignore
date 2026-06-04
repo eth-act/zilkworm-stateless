@@ -43,3 +43,7 @@ third_party/*/*/build/
 third_party/*/*/deps/
 .editorconfig
 .claude/worktrees
+
+int-test
+
+.DS_Store

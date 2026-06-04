@@ -18,7 +18,7 @@ include(FetchContent)
 FetchContent_Declare(
     zilkworm
     GIT_REPOSITORY https://github.com/developeruche/zilkworm.git
-    GIT_TAG        feat/spec-v0.1
+    GIT_TAG        feat/spec-v0.2
     GIT_SHALLOW    TRUE
 )
 
