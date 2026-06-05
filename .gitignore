@@ -45,5 +45,6 @@ third_party/*/*/deps/
 .claude/worktrees
 
 int-test
+zisk-int-test
 
 .DS_Store
