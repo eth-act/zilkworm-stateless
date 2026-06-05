@@ -1,0 +1,4 @@
+[toolchain]
+# ZisK host prover requires stable Rust.
+# (Only the guest uses the special +zisk toolchain; the host is plain stable.)
+channel = "1.96.0"
