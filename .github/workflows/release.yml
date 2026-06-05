@@ -1,0 +1,211 @@
+name: Release
+
+# Triggered by a version tag push (e.g. v0.1.0, v1.2.3-rc1).
+# Builds both SP1 and ZisK guest ELFs, then creates a GitHub Release and
+# attaches all artifacts.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"   # v0.1.0, v1.2.3-rc1, etc.
+
+permissions:
+  contents: write   # needed to create a GitHub Release
+
+jobs:
+  build-sp1:
+    name: Build SP1 guest
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: z6m_guest_sp1_${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install xPack riscv-none-elf-gcc
+        run: |
+          npm install --location=global xpm@latest
+          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
+
+      - name: Build SP1 guest
+        run: make guest_sp1
+
+      # Rename artifacts to include the zkVM and version in the filename.
+      - name: Stage release artifacts
+        run: |
+          mkdir -p dist
+          cp build/sp1/z6m_guest.elf  dist/z6m_guest_sp1_${{ github.ref_name }}.elf
+          cp build/sp1/z6m_guest.bin  dist/z6m_guest_sp1_${{ github.ref_name }}.bin
+          cp build/sp1/z6m_guest.text dist/z6m_guest_sp1_${{ github.ref_name }}.text
+
+      - name: Upload staged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: z6m_guest_sp1_${{ github.ref_name }}
+          path: dist/
+          retention-days: 1   # only needed until the release job picks them up
+
+  build-zisk:
+    name: Build ZisK guest
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: z6m_guest_zisk_${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install xPack riscv-none-elf-gcc
+        run: |
+          npm install --location=global xpm@latest
+          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
+
+      - name: Build ZisK guest
+        run: make guest_zisk
+
+      - name: Stage release artifacts
+        run: |
+          mkdir -p dist
+          cp build/zisk/z6m_guest.elf  dist/z6m_guest_zisk_${{ github.ref_name }}.elf
+          cp build/zisk/z6m_guest.bin  dist/z6m_guest_zisk_${{ github.ref_name }}.bin
+          cp build/zisk/z6m_guest.text dist/z6m_guest_zisk_${{ github.ref_name }}.text
+
+      - name: Upload staged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: z6m_guest_zisk_${{ github.ref_name }}
+          path: dist/
+          retention-days: 1
+
+  ef-tests:
+    name: EF blockchain tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with ethereum-tests submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build
+
+      - name: Build and run EF tests
+        run: make test
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-sp1, build-zisk, ef-tests]  # all three must succeed
+    steps:
+      - name: Checkout (for release notes from tag annotation)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so we can read the tag message
+
+      # Download both artifact bundles into a single staging directory.
+      - name: Download SP1 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: z6m_guest_sp1_${{ github.ref_name }}
+          path: release-assets/
+
+      - name: Download ZisK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: z6m_guest_zisk_${{ github.ref_name }}
+          path: release-assets/
+
+      - name: Compute SHA-256 checksums
+        working-directory: release-assets
+        run: |
+          sha256sum *.elf *.bin *.text > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # Build a markdown release body that lists what's in the release.
+      - name: Generate release notes
+        id: notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          # Try to use the tag annotation body; fall back to the commit message.
+          NOTES=$(git tag -l --format='%(contents:body)' "$TAG" 2>/dev/null || true)
+          if [ -z "$NOTES" ]; then
+            NOTES="Automated release for tag \`$TAG\`."
+          fi
+
+          cat >> "$GITHUB_OUTPUT" <<'NOTES_EOF'
+          body<<BODY_DELIM
+          ## z6m stateless guest — ${{ github.ref_name }}
+
+          $NOTES
+
+          ### Artifacts
+
+          | File | zkVM | Description |
+          |---|---|---|
+          | `z6m_guest_sp1_${{ github.ref_name }}.elf` | SP1 | Full ELF with debug sections |
+          | `z6m_guest_sp1_${{ github.ref_name }}.bin` | SP1 | Flat binary image |
+          | `z6m_guest_sp1_${{ github.ref_name }}.text` | SP1 | `.text`-only flat binary |
+          | `z6m_guest_zisk_${{ github.ref_name }}.elf` | ZisK | Full ELF with debug sections |
+          | `z6m_guest_zisk_${{ github.ref_name }}.bin` | ZisK | Flat binary image |
+          | `z6m_guest_zisk_${{ github.ref_name }}.text` | ZisK | `.text`-only flat binary |
+          | `SHA256SUMS.txt` | — | SHA-256 checksums for all binaries |
+
+          ### Build info
+
+          - **Zilkworm tag**: `feat/spec-v0.2`
+          - **SP1 ISA**: `rv64im`, stack at `0x7800_0000`, text at `0x7900_0000`
+          - **ZisK ISA**: `rv64ima`, ROM at `0x8000_0000`, RAM at `0xa003_0000`
+          - **EF blockchain tests**: ✅ passed before release was published
+          BODY_DELIM
+          NOTES_EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "z6m stateless guest ${{ github.ref_name }}"
+          body: |
+            ## z6m stateless guest — ${{ github.ref_name }}
+
+            Spec-compliant stateless EVM validator guest programs for SP1 and ZisK zkVMs.
+
+            ### Artifacts
+
+            | File | zkVM | Description |
+            |---|---|---|
+            | `z6m_guest_sp1_${{ github.ref_name }}.elf` | SP1 | Full ELF with debug sections |
+            | `z6m_guest_sp1_${{ github.ref_name }}.bin` | SP1 | Flat binary image |
+            | `z6m_guest_sp1_${{ github.ref_name }}.text` | SP1 | `.text`-only flat binary |
+            | `z6m_guest_zisk_${{ github.ref_name }}.elf` | ZisK | Full ELF with debug sections |
+            | `z6m_guest_zisk_${{ github.ref_name }}.bin` | ZisK | Flat binary image |
+            | `z6m_guest_zisk_${{ github.ref_name }}.text` | ZisK | `.text`-only flat binary |
+            | `SHA256SUMS.txt` | — | SHA-256 checksums for all binaries |
+
+            ### Build info
+
+            - **Zilkworm tag**: `feat/spec-v0.2`
+            - **SP1 ISA**: `rv64im`, stack at `0x7800_0000`, text at `0x7900_0000`
+            - **ZisK ISA**: `rv64ima`, ROM at `0x8000_0000`, RAM at `0xa003_0000`
+            - **EF blockchain tests**: ✅ passed before release was published
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}  # rc1 / alpha / beta tags → pre-release
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false
