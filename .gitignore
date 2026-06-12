@@ -46,5 +46,6 @@ third_party/*/*/deps/
 
 int-test
 zisk-int-test
+int-test-risc0
 
 .DS_Store
