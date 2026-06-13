@@ -9,7 +9,9 @@
 #include <zilk_core/core/common/bytes.hpp>
 #include <zilk_core/core/common/util.hpp>
 #include <zilk_core/core/execution/execution.hpp>
+#include <zilk_core/core/common/empty_hashes.hpp>
 #include <zilk_core/core/protocol/blockchain.hpp>
+#include <zilk_core/core/protocol/validation.hpp>
 #include <zilk_core/core/rlp/decode.hpp>
 #include <zilk_core/core/rlp/encode.hpp>
 #include <zilk_core/core/state/in_memory_state.hpp>
@@ -86,7 +88,7 @@ static std::vector<ByteSpan> decode_bytelist_list(ByteSpan data) {
 }
 
 static constexpr size_t EXEC_REQ_FIXED    = 12;
-static constexpr size_t PAYLOAD_FIXED     = 542;
+static constexpr size_t PAYLOAD_FIXED     = 532;
 static constexpr size_t NPR_FIXED         = 44;
 static constexpr size_t WITNESS_FIXED     = 12;
 static constexpr size_t STATELESS_INPUT_FIXED = 16;
@@ -304,14 +306,33 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     htr_new_payload_request(npr_root, si.new_payload_request);
 
     bool ok = false;
+    evmc::bytes32 computed_state_root{};  // for debug journal
 
     const auto& wit = si.witness;
     const SszExecutionPayload& ep = si.new_payload_request.execution_payload;
 
-    // Resolve chain config
+    // Resolve chain config.
+    // Chain IDs not in kKnownChainConfigs (e.g. EF test chains) get an
+    // all-forks-from-genesis PoS config so test fixtures validate correctly.
+    static const silkworm::ChainConfig kAllForksConfig{
+        .chain_id                  = 0,
+        .homestead_block           = 0,
+        .tangerine_whistle_block   = 0,
+        .spurious_dragon_block     = 0,
+        .byzantium_block           = 0,
+        .constantinople_block      = 0,
+        .petersburg_block          = 0,
+        .istanbul_block            = 0,
+        .berlin_block              = 0,
+        .london_block              = 0,
+        .terminal_total_difficulty = intx::uint256{},
+        .merge_netsplit_block      = 0,
+        .shanghai_time             = 0,
+        .cancun_time               = 0,
+    };
     const silkworm::ChainConfig* const* found =
         silkworm::kKnownChainConfigs.find(si.chain_config.chain_id);
-    const silkworm::ChainConfig& chain_cfg = found ? **found : silkworm::kMainnetConfig;
+    const silkworm::ChainConfig& chain_cfg = found ? **found : kAllForksConfig;
 
     // Decode pre-state and MPT witness nodes
     silkworm::InMemoryState state;
@@ -367,6 +388,11 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     block.header.base_fee_per_gas = intx::be::load<intx::uint256>(ep.base_fee_per_gas);
     block.header.blob_gas_used   = ep.blob_gas_used;
     block.header.excess_blob_gas = ep.excess_blob_gas;
+    {
+        evmc::bytes32 pbr{};
+        std::memcpy(pbr.bytes, si.new_payload_request.parent_beacon_block_root, 32);
+        block.header.parent_beacon_block_root = pbr;
+    }
 
     block.transactions.reserve(ep.transactions.size());
     for (const ByteSpan& ts : ep.transactions) {
@@ -386,6 +412,11 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         block.withdrawals->push_back(w);
     }
 
+    // PoS blocks have no ommers; roots are computed from decoded body
+    block.header.ommers_hash       = silkworm::kEmptyListHash;
+    block.header.transactions_root = silkworm::protocol::compute_transaction_root(block);
+    block.header.withdrawals_root  = silkworm::protocol::compute_withdrawals_root(block);
+
     // Execute block
     silkworm::protocol::Blockchain blockchain{state, chain_cfg, genesis};
     silkworm::ValidationResult res = blockchain.insert_block(block, /*check_state_root=*/false);
@@ -398,7 +429,6 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         std::vector<silkworm::mpt::TrieNodeFlat> acc_updates;
         silkworm::Bytes val_rlp;
         val_rlp.reserve(33);
-
         for (auto& [addr, acc_opt] : acc_changes) {
             const silkworm::Account& acc = acc_opt.value_or(silkworm::Account{});
             evmc::bytes32 storage_root   = acc.storage_root_;
@@ -432,7 +462,8 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         auto parent_hdr  = state.read_header(block.header.number - 1, block.header.parent_hash);
         evmc::bytes32 prev_root = parent_hdr ? parent_hdr->state_root : evmc::bytes32{};
         silkworm::mpt::GridMPT<false> acc_trie{node_store, prev_root};
-        ok = (acc_trie.calc_root_from_updates(acc_updates) == block.header.state_root);
+        computed_state_root = acc_trie.calc_root_from_updates(acc_updates);
+        ok = (computed_state_root == block.header.state_root);
     }
 
     StatelessValidatorOutput out{};
