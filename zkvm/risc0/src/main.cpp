@@ -8,7 +8,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <evmone_precompiles/sha256.hpp>
 
 extern "C" int main()
 {
@@ -19,19 +18,17 @@ extern "C" int main()
     const z6m::StatelessValidatorOutput result =
         z6m::run_stateless_guest(input_buf.ptr, input_buf.len);
 
-    // Serialise: root[0..32] || success[32] (33 bytes)
-    uint8_t raw[33];
-    std::memcpy(raw, result.new_payload_request_root, 32);
-    raw[32] = result.successful_validation ? 1 : 0;
+    // Journal layout: root[0..32] || success[32] (33 bytes total, unencrypted)
+    //
+    // The host can read byte [32] directly to determine validation status.
+    // For production proofs the verifier supplies the expected root + status
+    // and checks the journal commitment.
+    uint8_t journal[33];
+    std::memcpy(journal, result.new_payload_request_root, 32);
+    journal[32] = result.successful_validation ? 1 : 0;
 
-    // SHA-256 the 33-byte output (standard BE SHA256; runtime re-hashes in RISC0 format)
-    uint8_t digest[32];
-    evmone::crypto::sha256(
-        reinterpret_cast<std::byte*>(digest),
-        reinterpret_cast<const std::byte*>(raw), 33);
-
-    // Commit digest to journal; runtime accumulates for output-state computation
-    syscall_write(RISC0_FD_JOURNAL, digest, sizeof(digest));
+    // Commit to journal; RISC0 runtime hashes this via its output-state circuit
+    syscall_write(RISC0_FD_JOURNAL, journal, sizeof(journal));
 
     return 0;
 }
