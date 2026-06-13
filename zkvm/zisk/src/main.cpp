@@ -20,24 +20,18 @@
 
 #include <cstdint>
 #include <cstring>
-#include <evmone_precompiles/sha256.hpp>
 
 extern "C" int main()
 {
     ZiskInputBuf input = read_input_raw();
     const z6m::StatelessValidatorOutput result =
         z6m::run_stateless_guest(input.ptr, input.len);
-    
+
     uint8_t raw[33];
     std::memcpy(raw, result.new_payload_request_root, 32);
     raw[32] = result.successful_validation ? 1 : 0;
 
-    uint8_t digest[32];
-    evmone::crypto::sha256(
-        reinterpret_cast<std::byte*>(digest),
-        reinterpret_cast<const std::byte*>(raw), 33);
-
-    write_output_bytes(digest, sizeof(digest));
+    write_output_bytes(raw, sizeof(raw));
 
     return 0;
 }

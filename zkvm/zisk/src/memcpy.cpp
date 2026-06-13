@@ -74,10 +74,10 @@ __asm__(
     "j .LBBmemcpy0_48\n"
 ".LBBmemcpy0_12:\n"  // misaligned dispatch via jump table
     "addi a4, a4, -1\n"
-    "slli a4, a4, 2\n"
+    "slli a4, a4, 3\n"       // 8-byte stride (dword entries)
     "lla a5, .LJTI0_0\n"
     "add a4, a4, a5\n"
-    "lw a5, 0(a4)\n"
+    "ld a5, 0(a4)\n"          // zero-extending 64-bit load (no sign extension)
     "ld a4, 0(a1)\n"
     "jr a5\n"
 
@@ -542,15 +542,15 @@ __asm__(
 ".Lfunc_end0:\n"
     ".size memcpy, .Lfunc_end0-memcpy\n"
 
-    // Jump table (in .rodata).
+    // Jump table (in .rodata) — 8-byte entries so ld doesn't sign-extend ROM addresses.
     ".section .rodata,\"a\",@progbits\n"
-    ".p2align 2, 0x0\n"
+    ".p2align 3, 0x0\n"
 ".LJTI0_0:\n"
-    ".word .LBBmemcpy0_13\n"   // offset 1: 7 preamble bytes
-    ".word .LBBmemcpy0_35\n"   // offset 2: 6 preamble bytes
-    ".word .LBBmemcpy0_29\n"   // offset 3: 5 preamble bytes
-    ".word .LBBmemcpy0_32\n"   // offset 4: 4 preamble bytes
-    ".word .LBBmemcpy0_26\n"   // offset 5: 3 preamble bytes
-    ".word .LBBmemcpy0_38\n"   // offset 6: 2 preamble bytes
-    ".word .LBBmemcpy0_41\n"   // offset 7: 1 preamble byte
+    ".dword .LBBmemcpy0_13\n"   // offset 1: 7 preamble bytes
+    ".dword .LBBmemcpy0_35\n"   // offset 2: 6 preamble bytes
+    ".dword .LBBmemcpy0_29\n"   // offset 3: 5 preamble bytes
+    ".dword .LBBmemcpy0_32\n"   // offset 4: 4 preamble bytes
+    ".dword .LBBmemcpy0_26\n"   // offset 5: 3 preamble bytes
+    ".dword .LBBmemcpy0_38\n"   // offset 6: 2 preamble bytes
+    ".dword .LBBmemcpy0_41\n"   // offset 7: 1 preamble byte
 );

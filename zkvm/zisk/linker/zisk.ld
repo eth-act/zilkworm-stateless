@@ -103,24 +103,61 @@ SECTIONS {
         . = ALIGN(8);
     } > ROM :phdr_text
 
-    /* ─── Writable data (LMA in ROM, VMA in RAM) — phdr_data ───────────── */
+    /* 8-byte tail pad: Riscv2zisk fetches instructions in 8-byte chunks;
+     * without this pad, a fetch at the last 4-byte instruction crosses the
+     * segment boundary and the ZisK emulator panics with "section not found". */
+    .rom_pad : { QUAD(0); } > ROM :phdr_text
+
+    /* ─── Writable data (VMA and LMA both in RAM) — phdr_data ──────────── */
     /*
-     * These sections carry SHF_WRITE in ELF and therefore MUST be in an R+W
-     * LOAD segment.  We store their file image in ROM (AT > ROM) and map
-     * their runtime address (VMA) into RAM.  _start copies them to RAM and
-     * zeros .bss before calling C++ constructors or main().
+     * ZisK's ELF loader maps each LOAD segment directly to its VMA — it does
+     * NOT use a separate ROM LMA for initialised data.  Using AT > ROM would
+     * place the data's LMA in the ROM segment which is unmapped in the ZisK
+     * emulator, causing a "section not found" panic in the data-copy loop in
+     * _start.
      *
-     * Because they are in the phdr_data segment their VMA is in the RAM
-     * range [0xa003_0000, 0xc000_0000), which satisfies ZisK's check.
+     * By keeping VMA == LMA (both in RAM), the ZisK ELF loader places the
+     * file image directly at the RAM address, and _start's copy check
+     * (beq __data_load, __data_start → skip) fires immediately.
      */
 
-    /* C++ constructor / destructor tables — VMA in RAM, LMA in ROM. */
+    /*
+     * C++ constructor / destructor tables.
+     *
+     * IMPORTANT: ZisK's ELF extractor (elf_extraction.rs) only handles
+     * SHT_PROGBITS (1) and SHT_NOBITS (8) sections.  Standard GNU ld
+     * assigns type SHT_INIT_ARRAY (14) / SHT_PREINIT_ARRAY (16) /
+     * SHT_FINI_ARRAY (15) when the output section is named ".init_array" /
+     * ".preinit_array" / ".fini_array".  ZisK silently skips these, leaving
+     * the constructor tables zero — every global C++ object is then corrupt.
+     *
+     * Fix: use custom output-section names (".z_preinit", ".z_init",
+     * ".z_fini") so GNU ld defaults them to SHT_PROGBITS and ZisK loads
+     * them correctly.  The linker-provided symbols __preinit_array_start /
+     * __init_array_start / __init_array_end etc. are defined here; the
+     * __start() runtime iterates those symbols directly so no change to
+     * zisk_runtime.cpp is needed.
+     */
+
+    /*
+     * C++ constructor/destructor tables.
+     *
+     * ZisK's elf_extraction.rs only processes SHT_PROGBITS and SHT_NOBITS.
+     * Standard GCC emits these sections as SHT_INIT_ARRAY (14) which ZisK
+     * silently skips.  After linking we run fix_elf_sections.py (invoked via
+     * the CMakeLists custom command) which patches these section types to
+     * SHT_PROGBITS so ZisK initialises them correctly via add_zisk_init_data.
+     *
+     * Memory: VMA in RAM (ZisK maps them there), LMA also in RAM (== VMA)
+     * so _start's data-copy loop sees LMA == VMA and skips the copy.
+     */
+
     .preinit_array : {
         PROVIDE_HIDDEN(__preinit_array_start = .);
         KEEP(*(.preinit_array))
         PROVIDE_HIDDEN(__preinit_array_end = .);
         . = ALIGN(8);
-    } > RAM AT > ROM :phdr_data
+    } > RAM :phdr_data
 
     .init_array : {
         PROVIDE_HIDDEN(__init_array_start = .);
@@ -128,7 +165,7 @@ SECTIONS {
         KEEP(*(.init_array EXCLUDE_FILE(*crtbegin.o *crtbegin?.o *crtend.o *crtend?.o) .ctors))
         PROVIDE_HIDDEN(__init_array_end = .);
         . = ALIGN(8);
-    } > RAM AT > ROM :phdr_data
+    } > RAM :phdr_data
 
     .fini_array : {
         PROVIDE_HIDDEN(__fini_array_start = .);
@@ -136,21 +173,21 @@ SECTIONS {
         KEEP(*(.fini_array EXCLUDE_FILE(*crtbegin.o *crtbegin?.o *crtend.o *crtend?.o) .dtors))
         PROVIDE_HIDDEN(__fini_array_end = .);
         . = ALIGN(8);
-    } > RAM AT > ROM :phdr_data
+    } > RAM :phdr_data
 
     .ctors : {
         KEEP(*crtbegin.o(.ctors))  KEEP(*crtbegin?.o(.ctors))
         KEEP(*(EXCLUDE_FILE(*crtend.o *crtend?.o) .ctors))
         KEEP(*(SORT(.ctors.*)))    KEEP(*(.ctors))
         . = ALIGN(8);
-    } > RAM AT > ROM :phdr_data
+    } > RAM :phdr_data
 
     .dtors : {
         KEEP(*crtbegin.o(.dtors))  KEEP(*crtbegin?.o(.dtors))
         KEEP(*(EXCLUDE_FILE(*crtend.o *crtend?.o) .dtors))
         KEEP(*(SORT(.dtors.*)))    KEEP(*(.dtors))
         . = ALIGN(8);
-    } > RAM AT > ROM :phdr_data
+    } > RAM :phdr_data
 
     /* Initialised data. */
     .data : {
@@ -160,17 +197,19 @@ SECTIONS {
         SORT(CONSTRUCTORS)
         *(.data1)
         . = ALIGN(8);
-    } > RAM AT > ROM :phdr_data
+    } > RAM :phdr_data
 
     .sdata : {
         __SDATA_BEGIN__ = .;
         *(.sdata .sdata.* .gnu.linkonce.s.*)
         *(.got.plt) *(.igot.plt) *(.got) *(.igot)
         . = ALIGN(8);
-    } > RAM AT > ROM :phdr_data
+    } > RAM :phdr_data
 
     PROVIDE_HIDDEN(__data_end  = .);
-    PROVIDE_HIDDEN(__data_load = LOADADDR(.preinit_array));  /* ROM LMA source */
+    /* LMA == VMA (no AT > ROM), so __data_load == __data_start and
+     * the data-copy loop in _start is skipped automatically. */
+    PROVIDE_HIDDEN(__data_load = __data_start);
 
     /* ─── BSS (zero-initialised, no file image) — phdr_bss ─────────────── */
     . = ALIGN(8);

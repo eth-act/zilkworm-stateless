@@ -9,7 +9,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <evmone_precompiles/sha256.hpp>
 
 extern "C" int main()
 {
@@ -25,14 +24,7 @@ extern "C" int main()
     std::memcpy(raw, result.new_payload_request_root, 32);
     raw[32] = result.successful_validation ? 1 : 0;
 
-    // SHA-256 the 33-byte output
-    uint8_t digest[32];
-    evmone::crypto::sha256(
-        reinterpret_cast<std::byte*>(digest),
-        reinterpret_cast<const std::byte*>(raw), 33);
-
-    // Write digest to public-values FD; runtime will SHA-256 again
-    syscall_write(SP1_FD_PUBLIC_VALUES, digest, sizeof(digest));
+    syscall_write(SP1_FD_PUBLIC_VALUES, raw, sizeof(raw));
 
     return 0;
 }

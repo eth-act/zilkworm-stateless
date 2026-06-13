@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 cmake_minimum_required(VERSION 3.28)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 # Fetch zilkworm
 # We use FetchContent_Populate rather than FetchContent_MakeAvailable so we can
@@ -164,6 +165,12 @@ if(NOT OBJCOPY)
 endif()
 
 add_custom_command(TARGET z6m_guest POST_BUILD
+    # Patch SHT_INIT_ARRAY / SHT_FINI_ARRAY / SHT_PREINIT_ARRAY sections to
+    # SHT_PROGBITS so ZisK's elf_extraction.rs loads C++ constructor tables.
+    COMMAND ${CMAKE_COMMAND} -E echo "Patching ELF section types for ZisK compatibility..."
+    COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/fix_elf_sections.py"
+        "$<TARGET_FILE:z6m_guest>"
     COMMAND ${OBJCOPY} -O binary
         "$<TARGET_FILE:z6m_guest>"
         "${CMAKE_BINARY_DIR}/z6m_guest.bin"

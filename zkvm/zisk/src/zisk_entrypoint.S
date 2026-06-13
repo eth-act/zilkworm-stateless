@@ -27,29 +27,23 @@
     .section .text.init, "ax", @progbits
     .globl _start
     .type  _start, @function
+
 _start:
     /* ── 1. Global pointer ────────────────────────────────────────────── */
-    /* Required before any GP-relative access (sdata, sbss, etc.).
-     * .option norelax prevents the assembler from rewriting this la into a
-     * GP-relative load, which would be circular.                           */
     .option push
     .option norelax
     la      gp, __global_pointer$
     .option pop
 
     /* ── 2. Stack pointer ──────────────────────────────────────────────── */
-    /* _init_stack_top is set by the linker script to 256 KiB above BSS.   */
     la      sp, _init_stack_top
 
-    /* ── 3. Copy .data from ROM (LMA) to RAM (VMA) ─────────────────────
-     * Source : __data_load  (ROM address where the ELF stored the image)
-     * Dest   : [__data_start, __data_end)  (RAM run addresses)
-     * If LMA == VMA (no split) skip the copy.                              */
-    la      t0, __data_load     /* source: ROM LMA                         */
-    la      t1, __data_start    /* dest:   RAM VMA start                   */
-    la      t2, __data_end      /* dest:   RAM VMA end                     */
-    beq     t0, t1, .Lbss_zero  /* LMA == VMA → no copy needed            */
-    bgeu    t1, t2, .Lbss_zero  /* zero-length .data → skip                */
+    /* ── 3. Copy .data from ROM (LMA) to RAM (VMA) ─────────────────────*/
+    la      t0, __data_load
+    la      t1, __data_start
+    la      t2, __data_end
+    beq     t0, t1, .Lbss_zero
+    bgeu    t1, t2, .Lbss_zero
 .Ldata_copy:
     ld      t3, 0(t0)
     sd      t3, 0(t1)
@@ -58,19 +52,16 @@ _start:
     bltu    t1, t2, .Ldata_copy
 
     /* ── 4. Zero .bss ─────────────────────────────────────────────────── */
-    /* [__bss_start, __BSS_END__) is 8-byte aligned by the linker script.  */
 .Lbss_zero:
     la      t0, __bss_start
     la      t1, __BSS_END__
-    bgeu    t0, t1, .Lruntime   /* empty .bss → skip                       */
+    bgeu    t0, t1, .Lruntime
 .Lbss_loop:
     sd      zero, 0(t0)
     addi    t0, t0, 8
     bltu    t0, t1, .Lbss_loop
 
     /* ── 5. C++ runtime + main ─────────────────────────────────────────── */
-    /* __start() lives in zisk_runtime.cpp.  It runs global constructors,
-     * calls main(), then halts the VM.  It never returns.                   */
 .Lruntime:
     call    __start
 

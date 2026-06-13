@@ -116,7 +116,7 @@ extern "C" [[noreturn]] void __start() {
     for (auto p = __preinit_array_start; p != __preinit_array_end; ++p)
         (*p)();
     for (auto p = __init_array_start; p != __init_array_end; ++p)
-        (*p)();
+        if (*p) (*p)();
 
     /* 2. Guest program. */
     main();
