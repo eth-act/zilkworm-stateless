@@ -306,14 +306,11 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     htr_new_payload_request(npr_root, si.new_payload_request);
 
     bool ok = false;
-    evmc::bytes32 computed_state_root{};  // for debug journal
+    evmc::bytes32 computed_state_root{};
 
     const auto& wit = si.witness;
     const SszExecutionPayload& ep = si.new_payload_request.execution_payload;
 
-    // Resolve chain config.
-    // Chain IDs not in kKnownChainConfigs (e.g. EF test chains) get an
-    // all-forks-from-genesis PoS config so test fixtures validate correctly.
     static const silkworm::ChainConfig kAllForksConfig{
         .chain_id                  = 0,
         .homestead_block           = 0,
@@ -329,10 +326,38 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         .merge_netsplit_block      = 0,
         .shanghai_time             = 0,
         .cancun_time               = 0,
+        .prague_time               = 0,
+        .osaka_time                = 0,
     };
     const silkworm::ChainConfig* const* found =
         silkworm::kKnownChainConfigs.find(si.chain_config.chain_id);
     const silkworm::ChainConfig& chain_cfg = found ? **found : kAllForksConfig;
+
+    if (wit.headers.size() > 256) {
+        StatelessValidatorOutput out{};
+        std::memcpy(out.new_payload_request_root, npr_root, 32);
+        out.successful_validation = false;
+        return out;
+    }
+    // Compute keccak256 of each header RLP so we can check the chain.
+    std::vector<evmc::bytes32> header_hashes(wit.headers.size());
+    for (size_t i = 0; i < wit.headers.size(); ++i) {
+        if (!wit.headers[i].len) { header_hashes[i] = {}; continue; }
+        auto h = ethash_keccak256(wit.headers[i].ptr, wit.headers[i].len);
+        std::memcpy(header_hashes[i].bytes, h.bytes, 32);
+    }
+    // Check each header's parent_hash equals hash of the preceding header.
+    for (size_t i = 1; i < wit.headers.size(); ++i) {
+        if (!wit.headers[i].len) continue;
+        silkworm::ByteView rlp{wit.headers[i].ptr, wit.headers[i].len};
+        silkworm::BlockHeader hdr;
+        if (!silkworm::rlp::decode(rlp, hdr) || hdr.parent_hash != header_hashes[i - 1]) {
+            StatelessValidatorOutput out{};
+            std::memcpy(out.new_payload_request_root, npr_root, 32);
+            out.successful_validation = false;
+            return out;
+        }
+    }
 
     // Decode pre-state and MPT witness nodes
     silkworm::InMemoryState state;

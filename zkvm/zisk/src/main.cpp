@@ -7,12 +7,9 @@
  *   - Input  : read_input_raw()  → reads from memory-mapped INPUT_ADDR
  *   - Output : write_output_bytes() → stores u32 LE slots at OUTPUT_ADDR
  *
- * Output format (8 × u32 = 32 bytes, matching the SP1 guest):
- *   SHA-256( new_payload_request_root[32] || successful_validation[1] )
- *
- * The SHA-256 step produces a compact, deterministic commitment that is
- * consistent with the SP1 guest's public-values digest, making it easy to
- * compare proofs from both backends.
+ * Output format (33 bytes, matching SP1 and RISC0 guests):
+ *   new_payload_request_root[0..32] || successful_validation[32]
+ *   where successful_validation is 0x01 (true) or 0x00 (false).
  */
 
 #include <z6m/stateless.hpp>
