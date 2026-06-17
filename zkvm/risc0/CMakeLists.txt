@@ -4,7 +4,10 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Fetch zilkworm (same tag as SP1 build)
-cmake_policy(SET CMP0169 OLD)
+# CMP0169 is unknown on CMake < 3.30; guard so the policy is only set when available.
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
 
 include(FetchContent)
 

@@ -8,7 +8,10 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # We use FetchContent_Populate rather than FetchContent_MakeAvailable so we can
 # bootstrap Cable from the fetched source BEFORE calling project().  Cable must
 # come first because it manipulates cmake_policy before the project is declared.
-cmake_policy(SET CMP0169 OLD)
+# CMP0169 is unknown on CMake < 3.30; guard so the policy is only set when available.
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
 
 include(FetchContent)
 

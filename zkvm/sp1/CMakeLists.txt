@@ -11,7 +11,11 @@ cmake_minimum_required(VERSION 3.28)
 # cmake_policy CMP0169 controls whether the deprecated form of
 # FetchContent_Populate is allowed.  We opt in explicitly to silence the warning
 # and future-proof against CMake removing the old behaviour.
-cmake_policy(SET CMP0169 OLD)
+# Guard with if(POLICY ...) so this is a no-op on CMake < 3.30, which does not
+# know this policy yet and would error if we set it unconditionally.
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
 
 include(FetchContent)
 

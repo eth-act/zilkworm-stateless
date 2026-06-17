@@ -20,7 +20,7 @@ jobs:
       artifact-name: z6m_guest_sp1_${{ github.ref_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install CMake 3.28+
         uses: lukka/get-cmake@latest
@@ -44,7 +44,7 @@ jobs:
           cp build/sp1/z6m_guest.text dist/z6m_guest_sp1_${{ github.ref_name }}.text
 
       - name: Upload staged artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z6m_guest_sp1_${{ github.ref_name }}
           path: dist/
@@ -57,7 +57,7 @@ jobs:
       artifact-name: z6m_guest_zisk_${{ github.ref_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install CMake 3.28+
         uses: lukka/get-cmake@latest
@@ -80,7 +80,7 @@ jobs:
           cp build/zisk/z6m_guest.text dist/z6m_guest_zisk_${{ github.ref_name }}.text
 
       - name: Upload staged artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z6m_guest_zisk_${{ github.ref_name }}
           path: dist/
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with ethereum-tests submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -115,19 +115,19 @@ jobs:
     needs: [build-sp1, build-zisk, ef-tests]  # all three must succeed
     steps:
       - name: Checkout (for release notes from tag annotation)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0   # full history so we can read the tag message
 
       # Download both artifact bundles into a single staging directory.
       - name: Download SP1 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: z6m_guest_sp1_${{ github.ref_name }}
           path: release-assets/
 
       - name: Download ZisK artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: z6m_guest_zisk_${{ github.ref_name }}
           path: release-assets/
@@ -138,46 +138,8 @@ jobs:
           sha256sum *.elf *.bin *.text > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      # Build a markdown release body that lists what's in the release.
-      - name: Generate release notes
-        id: notes
-        run: |
-          TAG="${{ github.ref_name }}"
-          # Try to use the tag annotation body; fall back to the commit message.
-          NOTES=$(git tag -l --format='%(contents:body)' "$TAG" 2>/dev/null || true)
-          if [ -z "$NOTES" ]; then
-            NOTES="Automated release for tag \`$TAG\`."
-          fi
-
-          cat >> "$GITHUB_OUTPUT" <<'NOTES_EOF'
-          body<<BODY_DELIM
-          ## z6m stateless guest — ${{ github.ref_name }}
-
-          $NOTES
-
-          ### Artifacts
-
-          | File | zkVM | Description |
-          |---|---|---|
-          | `z6m_guest_sp1_${{ github.ref_name }}.elf` | SP1 | Full ELF with debug sections |
-          | `z6m_guest_sp1_${{ github.ref_name }}.bin` | SP1 | Flat binary image |
-          | `z6m_guest_sp1_${{ github.ref_name }}.text` | SP1 | `.text`-only flat binary |
-          | `z6m_guest_zisk_${{ github.ref_name }}.elf` | ZisK | Full ELF with debug sections |
-          | `z6m_guest_zisk_${{ github.ref_name }}.bin` | ZisK | Flat binary image |
-          | `z6m_guest_zisk_${{ github.ref_name }}.text` | ZisK | `.text`-only flat binary |
-          | `SHA256SUMS.txt` | — | SHA-256 checksums for all binaries |
-
-          ### Build info
-
-          - **Zilkworm tag**: `feat/spec-v0.2`
-          - **SP1 ISA**: `rv64im`, stack at `0x7800_0000`, text at `0x7900_0000`
-          - **ZisK ISA**: `rv64ima`, ROM at `0x8000_0000`, RAM at `0xa003_0000`
-          - **EF blockchain tests**: ✅ passed before release was published
-          BODY_DELIM
-          NOTES_EOF
-
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: "z6m stateless guest ${{ github.ref_name }}"

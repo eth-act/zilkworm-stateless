@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install CMake 3.28+
         uses: lukka/get-cmake@latest
@@ -35,7 +35,7 @@ jobs:
         run: make guest_sp1
 
       - name: Upload SP1 ELF artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z6m_guest_sp1
           path: |
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install CMake 3.28+
         uses: lukka/get-cmake@latest
@@ -64,7 +64,7 @@ jobs:
         run: make guest_zisk
 
       - name: Upload ZisK ELF artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z6m_guest_zisk
           path: |
@@ -77,7 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with ethereum-tests submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
