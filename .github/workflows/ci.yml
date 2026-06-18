@@ -43,6 +43,35 @@ jobs:
             build/sp1/z6m_guest.bin
             build/sp1/z6m_guest.text
           retention-days: 7
+  build-risc0:
+    name: Build RISC0 guest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install xPack riscv-none-elf-gcc
+        run: |
+          npm install --location=global xpm@latest
+          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
+
+      - name: Build RISC0 guest
+        run: make guest_risc0
+
+      - name: Upload RISC0 ELF artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: z6m_guest_risc0
+          path: |
+            build/risc0/z6m_guest.elf
+            build/risc0/z6m_guest.bin
+            build/risc0/z6m_guest.text
+          retention-days: 7
   build-zisk:
     name: Build ZisK guest
     runs-on: ubuntu-latest
