@@ -42,11 +42,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(SILKWORM_MAIN_DIR "${zilkworm_SOURCE_DIR}")
 
 # Tell the whole build that we are targeting ZisK.
-# Unlike SP1 (which defines SP1 to enable ecall-accelerated crypto in evmone),
-# ZISK does not yet hook into evmone's acceleration guards — evmone falls back
-# to its software implementations, which are correct.  Future work can wire up
-# ZisK CSR precompile syscalls (e.g. SHA-256F at CSR 0x805) via the same
-# guard mechanism used for SP1.
+# Like SP1, this enables the `#ifdef ZISK` acceleration guards in evmone's crypto
+# hotpaths, routing them through ZisK CSR precompile syscalls:
+#   - Keccak-f[1600]  -> CSR 0x800  (keccak.c)
+#   - SHA-256F        -> CSR 0x805  (sha256.cpp)
+# Hotpaths without a ZISK guard fall back to the correct software implementation.
 add_compile_definitions(ZISK)
 
 # Build info

@@ -88,11 +88,18 @@ static constexpr uint32_t ZISK_SC_PROFILE          = 0x81A;
  * field of the CSRRS instruction), hence the macro approach.
  * ───────────────────────────────────────────────────────────────────────── */
 
+/* The base rv64ima march does not include the Zicsr extension, so enable it
+ * locally around the `csrs` (via `.option arch, +zicsr`) so the assembler
+ * accepts the CSR write without changing the global -march. */
 #define ZISK_SYSCALL(csr_port, data_ptr)                                   \
     do {                                                                    \
         register uintptr_t _r asm("a0") =                                  \
             reinterpret_cast<uintptr_t>(data_ptr);                          \
-        asm volatile("csrs " #csr_port ", %0" : : "r"(_r) : "memory");     \
+        asm volatile(".option push\n\t"                                     \
+                     ".option arch, +zicsr\n\t"                             \
+                     "csrs " #csr_port ", %0\n\t"                           \
+                     ".option pop"                                          \
+                     : : "r"(_r) : "memory");                               \
     } while (0)
 
 /* ─────────────────────────────────────────────────────────────────────────
