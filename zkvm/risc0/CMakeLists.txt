@@ -37,8 +37,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(SILKWORM_MAIN_DIR "${zilkworm_SOURCE_DIR}")
 
 # Signal to all compilation units that we are targeting RISC0.
-# NOTE: SP1 is intentionally NOT defined here, so evmone uses its software
-#       SHA256, secp256k1, BN254, etc. implementations (no accelerated ecalls).
+# This enables the `#ifdef RISC0` acceleration guards in evmone, routing the
+# crypto operations RISC0 has native accelerators for through ecalls:
+#   - SHA-256 compression  -> ecall ecall::SHA    (3)   (sha256.cpp)
+#   - 256-bit modular mul  -> ecall ecall::BIGINT (4)   (BN254 base field)
+# RISC0 has no native keccak / EC-point / Fp2 accelerator, so those paths fall
+# back to evmone's (correct) software implementations.
 add_compile_definitions(RISC0)
 
 # Build info
