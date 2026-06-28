@@ -47,5 +47,7 @@ third_party/*/*/deps/
 int-test
 zisk-int-test
 int-test-risc0
+/validate_accel.sh
+
 
 .DS_Store
