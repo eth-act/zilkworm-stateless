@@ -19,12 +19,11 @@ extern "C" int main()
     const z6m::StatelessValidatorOutput result =
         z6m::run_stateless_guest(input_buf.ptr, input_buf.len);
 
-    // Serialise: root[0..32] || success[32] (33 bytes)
-    uint8_t raw[33];
-    std::memcpy(raw, result.new_payload_request_root, 32);
-    raw[32] = result.successful_validation ? 1 : 0;
+    // Commit SHA-256(root[32] || success[1] || chain_id LE[8]) — 32 bytes.
+    uint8_t digest[32];
+    z6m::commit_public_values(result, digest);
 
-    syscall_write(SP1_FD_PUBLIC_VALUES, raw, sizeof(raw));
+    syscall_write(SP1_FD_PUBLIC_VALUES, digest, sizeof(digest));
 
     return 0;
 }

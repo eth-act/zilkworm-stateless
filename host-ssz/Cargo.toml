@@ -1,0 +1,16 @@
+[package]
+name = "zilkworm-stateless-input"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Host-side canonical schema-prefixed SSZ encoder for the zilkworm C++ stateless-validator guest input."
+
+# SSZ serialization is provided by lambdaclass/libssz (the same library the
+# canonical ere-guests types use). The container/list/offset layout comes from
+# libssz's `SszEncode` derive; this crate only defines the container structs
+# (mirroring core/include/z6m/stateless_types.hpp) and the schema-id prefix.
+# Consumers (e.g. zkboost) map their own block / witness / chain-config types
+# onto the primitive structs here.
+[dependencies]
+libssz = "0.2.2"
+libssz-derive = "0.2.2"

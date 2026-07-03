@@ -7,9 +7,8 @@
  *   - Input  : read_input_raw()  → reads from memory-mapped INPUT_ADDR
  *   - Output : write_output_bytes() → stores u32 LE slots at OUTPUT_ADDR
  *
- * Output format (33 bytes, matching SP1 and RISC0 guests):
- *   new_payload_request_root[0..32] || successful_validation[32]
- *   where successful_validation is 0x01 (true) or 0x00 (false).
+ * Output format (32 bytes, matching SP1 and RISC0 guests):
+ *   SHA-256(root[32] || successful_validation[1] || chain_id LE[8])
  */
 
 #include <z6m/stateless.hpp>
@@ -24,11 +23,11 @@ extern "C" int main()
     const z6m::StatelessValidatorOutput result =
         z6m::run_stateless_guest(input.ptr, input.len);
 
-    uint8_t raw[33];
-    std::memcpy(raw, result.new_payload_request_root, 32);
-    raw[32] = result.successful_validation ? 1 : 0;
+    // Commit SHA-256(root[32] || success[1] || chain_id LE[8]) — 32 bytes.
+    uint8_t digest[32];
+    z6m::commit_public_values(result, digest);
 
-    write_output_bytes(raw, sizeof(raw));
+    write_output_bytes(digest, sizeof(digest));
 
     return 0;
 }

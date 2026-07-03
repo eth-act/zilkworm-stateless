@@ -91,6 +91,10 @@ static constexpr size_t EXEC_REQ_FIXED    = 12;
 static constexpr size_t PAYLOAD_FIXED     = 532;
 static constexpr size_t NPR_FIXED         = 44;
 static constexpr size_t WITNESS_FIXED     = 12;
+// SszStatelessInput fixed header (spec / stateless_ssz.py): four u32 offsets
+// (new_payload_request, witness, chain_config, public_keys) = 16 bytes.
+// chain_config is offset-referenced (variable field), confirmed against the
+// canonical spec-CLI output (int-test-risc0/real_input.bin).
 static constexpr size_t STATELESS_INPUT_FIXED = 16;
 
 static SszExecutionRequests decode_execution_requests(ByteSpan s) {
@@ -180,6 +184,10 @@ static SszExecutionWitness decode_witness(ByteSpan s) {
 static SszStatelessInput decode_stateless_input(ByteSpan s) {
     SszStatelessInput si{};
     if (s.len < STATELESS_INPUT_FIXED) return si;
+    // Canonical StatelessInput (stateless_ssz.py, confirmed against spec-CLI
+    // output real_input.bin): all four fields are offset-referenced, so the fixed
+    // header is 4 u32 offsets = 16 bytes. chain_config is a variable field whose
+    // payload is the 8-byte chain_id.
     uint32_t off_npr = read_u32le(s.ptr);
     uint32_t off_wit = read_u32le(s.ptr + 4);
     uint32_t off_cc  = read_u32le(s.ptr + 8);
@@ -298,6 +306,18 @@ static void htr_new_payload_request(uint8_t out[32], const SszNewPayloadRequest&
 }
 
 StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
+    // Wire format (EIP-8025 / stateless_ssz.py): a 2-byte big-endian schema id
+    // followed by the SSZ-encoded SszStatelessInput. Strip and validate the
+    // prefix before decoding. A missing/wrong prefix means a malformed request:
+    // return a deterministic failure output (zeroed root) rather than decoding
+    // untrusted bytes — zkboost then rejects it on root mismatch.
+    if (len < STATELESS_INPUT_SCHEMA_ID_SIZE ||
+        (static_cast<uint16_t>((data[0] << 8) | data[1]) != STATELESS_INPUT_SCHEMA_ID)) {
+        return StatelessValidatorOutput{};
+    }
+    data += STATELESS_INPUT_SCHEMA_ID_SIZE;
+    len  -= STATELESS_INPUT_SCHEMA_ID_SIZE;
+
     ByteSpan input{data, len};
 
     SszStatelessInput si = decode_stateless_input(input);
@@ -494,7 +514,22 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     StatelessValidatorOutput out{};
     std::memcpy(out.new_payload_request_root, npr_root, 32);
     out.successful_validation = ok;
+    out.chain_id              = si.chain_config.chain_id;
     return out;
+}
+
+void commit_public_values(const StatelessValidatorOutput& out, uint8_t digest[32]) {
+    // Canonical serialisation, mirroring StatelessValidatorOutput::serialize()
+    // in ere-guests stateless-validator-common (tag v0.12.1):
+    //   root[0..32] || success[32] || chain_id LE[33..41]
+    uint8_t buf[STATELESS_VALIDATOR_OUTPUT_SIZE];
+    std::memcpy(buf, out.new_payload_request_root, 32);
+    buf[32] = out.successful_validation ? 1 : 0;
+    const uint64_t chain_id = out.chain_id;
+    for (size_t i = 0; i < 8; ++i)
+        buf[33 + i] = static_cast<uint8_t>(chain_id >> (8 * i)); // little-endian
+
+    sha256_bytes(digest, buf, STATELESS_VALIDATOR_OUTPUT_SIZE);
 }
 
 } // namespace z6m

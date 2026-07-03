@@ -18,11 +18,11 @@ extern "C" int main()
     const z6m::StatelessValidatorOutput result =
         z6m::run_stateless_guest(input_buf.ptr, input_buf.len);
 
-    uint8_t journal[33];
-    std::memcpy(journal, result.new_payload_request_root, 32);
-    journal[32] = result.successful_validation ? 1 : 0;
+    // Commit SHA-256(root[32] || success[1] || chain_id LE[8]) — 32 bytes.
+    uint8_t digest[32];
+    z6m::commit_public_values(result, digest);
 
-    syscall_write(RISC0_FD_JOURNAL, journal, sizeof(journal));
+    syscall_write(RISC0_FD_JOURNAL, digest, sizeof(digest));
 
     return 0;
 }
