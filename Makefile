@@ -4,9 +4,9 @@ SHELL  = /bin/bash
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.logicalcpu)
 ROOT  := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
-.PHONY: all guest_sp1 guest_zisk guest_risc0 test test-build clean
+.PHONY: all guest_sp1 guest_zisk test test-build clean
 
-all: guest_sp1 guest_zisk guest_risc0
+all: guest_sp1 guest_zisk
 
 # ── SP1 guest (rv64im bare-metal ELF) ────────────────────────────────────────
 guest_sp1:
@@ -14,13 +14,6 @@ guest_sp1:
 		-DCMAKE_TOOLCHAIN_FILE=$(ROOT)/zkvm/sp1/cmake/riscv64im-sp1.cmake \
 		-DCMAKE_BUILD_TYPE=Release
 	cmake --build $(ROOT)/build/sp1 -j$(NPROC)
-
-# ── RISC0 guest (rv32im bare-metal ELF) ──────────────────────────────────────
-guest_risc0:
-	cmake -S $(ROOT)/zkvm/risc0 -B $(ROOT)/build/risc0 \
-		-DCMAKE_TOOLCHAIN_FILE=$(ROOT)/zkvm/risc0/cmake/riscv32im-risc0.cmake \
-		-DCMAKE_BUILD_TYPE=Release
-	cmake --build $(ROOT)/build/risc0 -j$(NPROC)
 
 # ── ZisK guest (rv64ima bare-metal ELF) ──────────────────────────────────────
 guest_zisk:

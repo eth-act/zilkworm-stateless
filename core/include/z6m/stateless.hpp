@@ -39,7 +39,7 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len);
 
 /// Build the canonical 41-byte serialisation and SHA-256 it into `digest`,
 /// producing the 32-byte public-values commitment every zkVM target writes.
-/// Keeping this in the core guarantees byte-identical output across sp1/risc0/zisk.
+/// Keeping this in the core guarantees byte-identical output across every zkVM target.
 void commit_public_values(const StatelessValidatorOutput& out, uint8_t digest[32]);
 
 } // namespace z6m

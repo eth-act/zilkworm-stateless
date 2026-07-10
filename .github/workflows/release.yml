@@ -50,42 +50,6 @@ jobs:
           path: dist/
           retention-days: 1   # only needed until the release job picks them up
 
-  build-risc0:
-    name: Build RISC0 guest
-    runs-on: ubuntu-latest
-    outputs:
-      artifact-name: z6m_guest_risc0_${{ github.ref_name }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install CMake 3.28+
-        uses: lukka/get-cmake@latest
-        with:
-          cmakeVersion: "~3.28.0"
-
-      - name: Install xPack riscv-none-elf-gcc
-        run: |
-          npm install --location=global xpm@latest
-          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
-
-      - name: Build RISC0 guest
-        run: make guest_risc0
-
-      - name: Stage release artifacts
-        run: |
-          mkdir -p dist
-          cp build/risc0/z6m_guest.elf  dist/z6m_guest_risc0_${{ github.ref_name }}.elf
-          cp build/risc0/z6m_guest.bin  dist/z6m_guest_risc0_${{ github.ref_name }}.bin
-          cp build/risc0/z6m_guest.text dist/z6m_guest_risc0_${{ github.ref_name }}.text
-
-      - name: Upload staged artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: z6m_guest_risc0_${{ github.ref_name }}
-          path: dist/
-          retention-days: 1
-
   build-zisk:
     name: Build ZisK guest
     runs-on: ubuntu-latest
@@ -148,7 +112,7 @@ jobs:
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-sp1, build-risc0, build-zisk, ef-tests]  # all must succeed
+    needs: [build-sp1, build-zisk, ef-tests]  # all must succeed
     steps:
       - name: Checkout (for release notes from tag annotation)
         uses: actions/checkout@v6
@@ -160,12 +124,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: z6m_guest_sp1_${{ github.ref_name }}
-          path: release-assets/
-
-      - name: Download RISC0 artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: z6m_guest_risc0_${{ github.ref_name }}
           path: release-assets/
 
       - name: Download ZisK artifacts
@@ -209,7 +167,7 @@ jobs:
           body: |
             ## z6m stateless guest — ${{ github.ref_name }}
 
-            Spec-compliant stateless EVM validator guest programs for SP1, RISC0, and ZisK zkVMs.
+            Spec-compliant stateless EVM validator guest programs for SP1 and ZisK zkVMs.
 
             Every artifact is signed with minisign; the matching `<file>.minisig`
             is attached alongside it (verified by zkboost's guest-loader).
@@ -221,9 +179,6 @@ jobs:
             | `z6m_guest_sp1_${{ github.ref_name }}.elf` | SP1 | Full ELF with debug sections |
             | `z6m_guest_sp1_${{ github.ref_name }}.bin` | SP1 | Flat binary image |
             | `z6m_guest_sp1_${{ github.ref_name }}.text` | SP1 | `.text`-only flat binary |
-            | `z6m_guest_risc0_${{ github.ref_name }}.elf` | RISC0 | Full ELF with debug sections |
-            | `z6m_guest_risc0_${{ github.ref_name }}.bin` | RISC0 | Flat binary image |
-            | `z6m_guest_risc0_${{ github.ref_name }}.text` | RISC0 | `.text`-only flat binary |
             | `z6m_guest_zisk_${{ github.ref_name }}.elf` | ZisK | Full ELF with debug sections |
             | `z6m_guest_zisk_${{ github.ref_name }}.bin` | ZisK | Flat binary image |
             | `z6m_guest_zisk_${{ github.ref_name }}.text` | ZisK | `.text`-only flat binary |
@@ -233,7 +188,6 @@ jobs:
 
             - **Zilkworm tag**: `feat/spec-v0.2`
             - **SP1 ISA**: `rv64im`, stack at `0x7800_0000`, text at `0x7900_0000`
-            - **RISC0 ISA**: `rv32im`, ilp32 ABI
             - **ZisK ISA**: `rv64ima`, ROM at `0x8000_0000`, RAM at `0xa003_0000`
             - **EF blockchain tests**: ✅ passed before release was published
           draft: false

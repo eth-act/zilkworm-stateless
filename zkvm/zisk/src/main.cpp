@@ -7,7 +7,7 @@
  *   - Input  : read_input_raw()  → reads from memory-mapped INPUT_ADDR
  *   - Output : write_output_bytes() → stores u32 LE slots at OUTPUT_ADDR
  *
- * Output format (32 bytes, matching SP1 and RISC0 guests):
+ * Output format (32 bytes, matching every other zkVM guest):
  *   SHA-256(root[32] || successful_validation[1] || chain_id LE[8])
  */
 

@@ -94,7 +94,7 @@ static constexpr size_t WITNESS_FIXED     = 12;
 // SszStatelessInput fixed header (spec / stateless_ssz.py): four u32 offsets
 // (new_payload_request, witness, chain_config, public_keys) = 16 bytes.
 // chain_config is offset-referenced (variable field), confirmed against the
-// canonical spec-CLI output (int-test-risc0/real_input.bin).
+// canonical spec-CLI output (tools/real_input/real_input.bin).
 static constexpr size_t STATELESS_INPUT_FIXED = 16;
 
 static SszExecutionRequests decode_execution_requests(ByteSpan s) {
