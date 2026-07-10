@@ -1,0 +1,131 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+#include <cstddef> // size_t
+#include <cstdint> // uint8_t, uint32_t
+
+// OpenVM guest ABI — custom RISC-V instructions.
+//
+// All guest<->host communication goes through custom-0 opcode (0x0b)
+// instructions, encoded here with GNU assembler's `.insn i` / `.insn r`
+// directives (`riscv-none-elf-gcc`'s assembler supports these natively).
+//
+// Every encoding below was verified directly against the pinned OpenVM
+// source (openvm-org/openvm @ tag v2.0.0-rc.3):
+//   - extensions/rv32im/guest/src/lib.rs   (SYSTEM_OPCODE, *_FUNCT3, PhantomImm)
+//   - extensions/rv32im/guest/src/io.rs    (hint_store_u32!, hint_buffer_u32!,
+//                                            hint_input, reveal!, print_str)
+//   - crates/toolchain/platform/src/rust_rt.rs  (terminate)
+// This header only covers I/O + halt (Phase A). Acceleration instructions
+// (keccak-f1600/XORIN, sha256-compress) are added in Phase B.
+//
+// Rust `usize`/`u32`/pointer <-> C++ `size_t`/`uint32_t`/pointer, same
+// convention as sp1_syscalls.hpp / zisk_syscalls.hpp.
+
+namespace openvm {
+
+// Rust: #[repr(u16)] enum PhantomImm { HintInput = 0, PrintStr = 1, HintRandom = 2 }
+static constexpr uint16_t PHANTOM_IMM_HINT_INPUT = 0;
+static constexpr uint16_t PHANTOM_IMM_PRINT_STR  = 1;
+
+// Maximum words per hint_buffer_u32 instruction (AIR constraint); larger
+// reads must be split into multiple chunked calls.
+static constexpr size_t MAX_HINT_BUFFER_WORDS = 1023;
+
+// Rust: #[repr(C)] struct ReadVecResult — same shape as sp1/zisk's, so the
+// zkVM-agnostic core (core/src/stateless.cpp) needs no changes.
+struct ReadVecResult {
+    uint8_t *ptr;
+    size_t len;
+    size_t capacity;
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Raw instruction wrappers
+// ─────────────────────────────────────────────────────────────────────────
+
+// Reset the hint stream to the next input stream.
+// I-type: opcode=0x0b, funct3=0b011 (PHANTOM), rd=x0, rs1=x0, imm=HintInput(0)
+[[gnu::always_inline]] inline void hint_input() noexcept {
+    asm volatile(".insn i 0x0b, 0b011, x0, x0, 0" ::: "memory");
+}
+
+// Store the next 4 bytes from the hint stream to the word at `ptr`.
+// I-type: opcode=0x0b, funct3=0b001 (HINT), rd=ptr, rs1=x0, imm=0
+[[gnu::always_inline]] inline void hint_store_u32(void *ptr) noexcept {
+    asm volatile(".insn i 0x0b, 0b001, %0, x0, 0" :: "r"(ptr) : "memory");
+}
+
+// Store the next 4*len bytes from the hint stream to the buffer at `ptr`.
+// `len` (word count) must be <= MAX_HINT_BUFFER_WORDS; see hint_buffer_chunked.
+// I-type: opcode=0x0b, funct3=0b001 (HINT), rd=ptr, rs1=len, imm=1
+[[gnu::always_inline]] inline void hint_buffer_u32(void *ptr, size_t len) noexcept {
+    asm volatile(".insn i 0x0b, 0b001, %0, %1, 1" :: "r"(ptr), "r"(len) : "memory");
+}
+
+// Read hint buffer with automatic chunking for reads larger than
+// MAX_HINT_BUFFER_WORDS (matches openvm_rv32im_guest::hint_buffer_chunked).
+inline void hint_buffer_chunked(uint8_t *ptr, size_t num_words) noexcept {
+    while (num_words > 0) {
+        size_t chunk = num_words < MAX_HINT_BUFFER_WORDS ? num_words : MAX_HINT_BUFFER_WORDS;
+        hint_buffer_u32(ptr, chunk);
+        ptr += chunk * 4;
+        num_words -= chunk;
+    }
+}
+
+// Read the next 4 bytes from the hint stream into a u32 register value.
+// Matches openvm::io::read_u32(): hint_store_u32 into a scratch word, then load it.
+[[gnu::always_inline]] inline uint32_t hint_read_u32(void *scratch_word) noexcept {
+    hint_store_u32(scratch_word);
+    uint32_t result;
+    asm volatile("lw %0, 0(%1)" : "=r"(result) : "r"(scratch_word));
+    return result;
+}
+
+// Publish `value` as the `index`-th u32 word of the public output
+// (byte offset = index*4). Matches openvm::io::reveal_u32.
+// I-type: opcode=0x0b, funct3=0b010 (REVEAL), rd=byte_index, rs1=value, imm=0
+[[gnu::always_inline]] inline void reveal_u32(uint32_t value, size_t index) noexcept {
+    uint32_t byte_index = static_cast<uint32_t>(index) * 4;
+    asm volatile(".insn i 0x0b, 0b010, %0, %1, 0" :: "r"(byte_index), "r"(value) : "memory");
+}
+
+// Print a UTF-8 string to host stdout for debugging (no-op on a compliant
+// prover; useful under the emulator/executor). Matches
+// openvm_rv32im_guest::print_str_from_bytes.
+// I-type: opcode=0x0b, funct3=0b011 (PHANTOM), rd=ptr, rs1=len, imm=PrintStr(1)
+[[gnu::always_inline]] inline void print_str(const char *msg, size_t len) noexcept {
+    asm volatile(".insn i 0x0b, 0b011, %0, %1, 1" :: "r"(msg), "r"(len) : "memory");
+}
+
+// Halt with exit code 0 (success). Matches openvm_platform::rust_rt::terminate::<0>().
+// The immediate must be a compile-time constant (encoded in the instruction
+// word), so — like OpenVM's own Rust runtime, which only exposes exit()/
+// panic() and not a general runtime-parameterized halt — only two fixed exit
+// codes are provided.
+// I-type: opcode=0x0b, funct3=0 (TERMINATE), rd=x0, rs1=x0, imm=exit_code
+[[gnu::always_inline, noreturn]] inline void terminate_success() noexcept {
+    asm volatile(".insn i 0x0b, 0, x0, x0, 0");
+    __builtin_unreachable();
+}
+
+// Halt with exit code 1 (failure). Matches
+// openvm_platform::rust_rt::terminate::<1>() / openvm::process::panic().
+[[gnu::always_inline, noreturn]] inline void terminate_failure() noexcept {
+    asm volatile(".insn i 0x0b, 0, x0, x0, 1");
+    __builtin_unreachable();
+}
+
+} // namespace openvm
+
+// Read one length-prefixed input vector from the current hint stream.
+// Mirrors sp1_syscalls.hpp's / zisk_syscalls.hpp's read_vec_raw() shape so
+// core/src/stateless.cpp needs no zkVM-specific changes.
+extern "C" openvm::ReadVecResult read_vec_raw() noexcept;
+
+// Commit exit — used by main.cpp after publishing output words.
+[[noreturn]] inline void syscall_halt() noexcept {
+    openvm::terminate_success();
+}

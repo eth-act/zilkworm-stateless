@@ -4,9 +4,9 @@ SHELL  = /bin/bash
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.logicalcpu)
 ROOT  := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
-.PHONY: all guest_sp1 guest_zisk test test-build clean
+.PHONY: all guest_sp1 guest_zisk guest_openvm test test-build clean
 
-all: guest_sp1 guest_zisk
+all: guest_sp1 guest_zisk guest_openvm
 
 # ── SP1 guest (rv64im bare-metal ELF) ────────────────────────────────────────
 guest_sp1:
@@ -21,6 +21,13 @@ guest_zisk:
 		-DCMAKE_TOOLCHAIN_FILE=$(ROOT)/zkvm/zisk/cmake/riscv64ima-zisk.cmake \
 		-DCMAKE_BUILD_TYPE=Release
 	cmake --build $(ROOT)/build/zisk -j$(NPROC)
+
+# ── OpenVM guest (rv32im bare-metal ELF) ─────────────────────────────────────
+guest_openvm:
+	cmake -S $(ROOT)/zkvm/openvm -B $(ROOT)/build/openvm \
+		-DCMAKE_TOOLCHAIN_FILE=$(ROOT)/zkvm/openvm/cmake/riscv32im-openvm.cmake \
+		-DCMAKE_BUILD_TYPE=Release
+	cmake --build $(ROOT)/build/openvm -j$(NPROC)
 
 # ── EF blockchain test suite (native x86_64) ──────────────────────────────────
 test-build:
