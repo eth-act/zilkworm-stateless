@@ -118,6 +118,46 @@ inline void hint_buffer_chunked(uint8_t *ptr, size_t num_words) noexcept {
     __builtin_unreachable();
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Acceleration precompiles (Phase B) — R-type custom-0 instructions.
+//
+// Encodings verified against the pinned OpenVM source
+// (openvm-org/openvm @ tag v2.0.0-rc.3):
+//   - extensions/keccak256/guest/src/lib.rs  (KECCAKF_FUNCT3/FUNCT7, native_keccakf)
+//   - extensions/sha2/guest/src/lib.rs       (SHA2_FUNCT3, Sha2BaseFunct7::Sha256)
+// Both instructions carry their real data flow through memory (the operand
+// registers just hold pointers), so every wrapper here takes a "memory"
+// clobber and plain register operands — no register is treated as a value
+// result by the compiler.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Keccak-f[1600] permutation, applied in place to a 200-byte buffer (25
+// little-endian uint64_t lanes — the same in-memory layout evmone's
+// `uint64_t state[25]` already uses, so no repacking is needed).
+// R-type: opcode=0x0b, funct3=0b100, funct7=0.
+// rd is the InOut buffer-pointer register per native_keccakf's ABI (the
+// pointer value itself is unchanged; "+r" just matches the macro-generated
+// register class OpenVM's own Rust binding uses).
+[[gnu::always_inline]] inline void keccakf1600(uint64_t state[25]) noexcept {
+    void *buffer = state;
+    asm volatile(".insn r 0x0b, 0b100, 0, %0, x0, x0" : "+r"(buffer) :: "memory");
+}
+
+// SHA-256 compression function, single-shot over one 64-byte message block
+// (unlike SP1, there is no separate message-schedule "extend" step — the
+// circuit performs the full 64-round compression, including schedule
+// expansion, from the raw block in one instruction).
+// R-type: opcode=0x0b, funct3=0b100, funct7=2 (Sha2BaseFunct7::Sha256).
+// `prev_state`/`output` are 8 little-endian uint32_t words (32 bytes) —
+// matches evmone's native-order `uint32_t h[8]` exactly, no byte-swapping
+// needed (unlike RISC0's big-endian accelerator). `input` is the raw
+// 64-byte block, same byte order evmone's `chunk` buffer already holds it in.
+[[gnu::always_inline]] inline void sha256_compress(
+    const uint32_t prev_state[8], const uint8_t input[64], uint32_t output[8]) noexcept {
+    asm volatile(".insn r 0x0b, 0b100, 2, %0, %1, %2"
+                 :: "r"(output), "r"(prev_state), "r"(input) : "memory");
+}
+
 } // namespace openvm
 
 // Read one length-prefixed input vector from the current hint stream.

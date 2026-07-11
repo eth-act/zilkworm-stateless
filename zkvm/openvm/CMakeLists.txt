@@ -36,11 +36,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(SILKWORM_MAIN_DIR "${zilkworm_SOURCE_DIR}")
 
-# Phase A: no `OPENVM` compile definition yet. Unlike the other zkVM targets,
-# this build intentionally does NOT enable evmone's `#ifdef` acceleration
-# guards — the guest runs entirely on evmone's portable software crypto
-# paths, giving a real, measured baseline before any acceleration work
-# starts (see OPENVM_GUEST_PLAN.md, Phase B).
+# Phase B: tell the whole build (zilkworm + core + our binary) that we are
+# targeting OpenVM, enabling evmone's `#elif defined(OPENVM)` acceleration
+# guards for keccak256 (keccak.c) and SHA-256 (sha256.cpp). See
+# OPENVM_GUEST_PLAN.md for the Phase A (unaccelerated) baseline this is
+# measured against.
+add_compile_definitions(OPENVM)
 
 # Build info
 include(CableBuildInfo)
