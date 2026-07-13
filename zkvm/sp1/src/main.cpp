@@ -19,11 +19,12 @@ extern "C" int main()
     const z6m::StatelessValidatorOutput result =
         z6m::run_stateless_guest(input_buf.ptr, input_buf.len);
 
-    // Commit SHA-256(root[32] || success[1] || chain_id LE[8]) — 32 bytes.
-    uint8_t digest[32];
-    z6m::commit_public_values(result, digest);
+    // Commit the canonical SSZ StatelessValidationResult (variable length):
+    //   root[32] || success[1] || offset(=37)[4] || chain_config echo
+    uint8_t pv[z6m::MAX_PUBLIC_VALUES_SIZE];
+    const size_t pv_len = z6m::encode_public_values(result, pv, sizeof(pv));
 
-    syscall_write(SP1_FD_PUBLIC_VALUES, digest, sizeof(digest));
+    syscall_write(SP1_FD_PUBLIC_VALUES, pv, pv_len);
 
     return 0;
 }

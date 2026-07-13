@@ -27,7 +27,7 @@
 static constexpr size_t MAX_EXTRA_DATA_BYTES                    = 32;
 static constexpr size_t MAX_BYTES_PER_TRANSACTION               = 1u << 30;
 static constexpr size_t MAX_TRANSACTIONS_PER_PAYLOAD            = 1u << 20;
-static constexpr size_t MAX_WITHDRAWALS_PER_PAYLOAD             = 1u << 16;   // spec raised from 16
+static constexpr size_t MAX_WITHDRAWALS_PER_PAYLOAD             = 16;  // v0.13.0 (consensus canonical)
 static constexpr size_t MAX_BLOB_COMMITMENTS_PER_BLOCK          = 4096;
 static constexpr size_t MAX_DEPOSIT_REQUESTS_PER_PAYLOAD        = 1u << 13;
 static constexpr size_t MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD     = 1u << 4;
@@ -87,7 +87,20 @@ struct SszExecutionRequests {
     std::vector<SszConsolidationRequest> consolidations;
 };
 
-// SszExecutionPayload — all 17 fields per spec
+// Payload container shape, selected by the active fork (stateless-validator-common
+// v0.13.0 `StatelessInput::from_ssz_bytes`):
+//   Prague | Osaka | BPO1 | BPO2 → ElectraFulu (ExecutionPayloadV3, 17 fields)
+//   Amsterdam                    → Gloas       (ExecutionPayloadV4, 19 fields)
+// Bellatrix/Capella/Deneb shapes and BPO3–5 are not supported by this guest and
+// fail decoding (deterministic default failure output).
+enum class PayloadShape : uint8_t {
+    ElectraFulu,
+    Gloas,
+    Unsupported,
+};
+
+// SszExecutionPayload — V3 (ElectraFulu, 17 fields) or V4 (Gloas, 19 fields:
+// V3 + block_access_list + slot_number), distinguished by `shape`.
 struct SszExecutionPayload {
     uint8_t              parent_hash[32];
     uint8_t              fee_recipient[20];
@@ -106,7 +119,9 @@ struct SszExecutionPayload {
     std::vector<SszWithdrawal> withdrawals;
     uint64_t             blob_gas_used;
     uint64_t             excess_blob_gas;
-    ByteSpan             block_access_list; // ByteList[MAX_BLOCK_ACCESS_LIST_BYTES]
+    ByteSpan             block_access_list; // ByteList[MAX_BLOCK_ACCESS_LIST_BYTES] (Gloas only)
+    uint64_t             slot_number;       // (Gloas only)
+    PayloadShape         shape;
 };
 
 // SszNewPayloadRequest
@@ -124,9 +139,42 @@ struct SszExecutionWitness {
     std::vector<ByteSpan> headers;  // List[ByteList[MAX_BYTES_PER_HEADER], MAX_WITNESS_HEADERS]
 };
 
-// SszChainConfig
+// ProtocolFork SSZ enum values (stateless-validator-common v0.13.0; the spec
+// derives them from ProtocolFork declaration order).
+static constexpr uint64_t FORK_PARIS     = 14;
+static constexpr uint64_t FORK_SHANGHAI  = 15;
+static constexpr uint64_t FORK_CANCUN    = 16;
+static constexpr uint64_t FORK_PRAGUE    = 17;
+static constexpr uint64_t FORK_OSAKA     = 18;
+static constexpr uint64_t FORK_BPO1      = 19;
+static constexpr uint64_t FORK_BPO2      = 20;
+static constexpr uint64_t FORK_AMSTERDAM = 24;
+
+// SszBlobSchedule — effective blob parameters for a fork (fixed 24 bytes),
+// wrapped in List[.., 1] on the wire.
+struct SszBlobSchedule {
+    bool     present;
+    uint64_t target;
+    uint64_t max;
+    uint64_t base_fee_update_fraction;
+};
+
+// SszChainConfig — canonical rich chain config (v0.13.0):
+//   { chain_id: uint64, active_fork: ForkConfig }
+//   ForkConfig    = { fork: uint64, activation: ForkActivation,
+//                     blob_schedule: List[BlobSchedule, 1] }
+//   ForkActivation = { block_number: List[uint64, 1], timestamp: List[uint64, 1] }
+// `raw` retains the exact encoded bytes for the byte-exact echo in the output.
 struct SszChainConfig {
     uint64_t chain_id;
+    uint64_t fork;
+    bool     has_activation_block_number;
+    uint64_t activation_block_number;
+    bool     has_activation_timestamp;
+    uint64_t activation_timestamp;
+    SszBlobSchedule blob_schedule;
+    ByteSpan raw;
+    bool     valid;
 };
 
 // SszStatelessInput (top-level input container)
@@ -135,6 +183,7 @@ struct SszStatelessInput {
     SszExecutionWitness    witness;
     SszChainConfig         chain_config;
     std::vector<ByteSpan>  public_keys; // List[ByteList[MAX_BYTES_PER_PUBLIC_KEY], MAX_PUBLIC_KEYS]
+    bool                   valid;       // false → deterministic default failure output
 };
 
 // ─── SSZ fixed sizes for well-known structures (used during deserialization) ──

@@ -1,0 +1,5 @@
+# Build artifacts
+/target
+
+# Generated vectors (regenerate with `cargo run --release -- mock|real`)
+/vectors

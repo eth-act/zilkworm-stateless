@@ -153,11 +153,11 @@ static void htr_byte_list(uint8_t out[32], const uint8_t* data, size_t data_len,
     // For simplicity, and because the guest only needs correctness (not performance),
     // we use a recursive halving approach with a stack depth proportional to log2(limit_chunks).
 
-    // Build chunk array from data (zero-padded last chunk)
-    // Since large lists are possible, we use a streaming approach:
+    // merkleize handles the trailing partial chunk (zero-padded) and virtual
+    // zero leaves up to the limit via the zero-hash ladder.
+    (void)nchunks;
     uint8_t root[32];
-    // Compute hash_tree_root of the chunks vector with given limit
-    merkleize(root, data, nchunks, limit_chunks);
+    merkleize(root, data, data_len, limit_chunks);
     mix_in_length(out, root, data_len);
 }
 
@@ -172,29 +172,59 @@ static size_t next_pow2(size_t n) noexcept {
     return n + 1;
 }
 
-// Recursive merkleize of exactly `count` chunks (already power-of-two padded).
-// chunks[i] is 32 bytes, chunks is a flat byte array: chunks[i] starts at offset i*32.
-// For chunks that don't exist (index >= actual_count), treat as zero.
+// Root of an all-zero subtree with 2^depth leaves:
+//   zero_subtree(0) = 32 zero bytes, zero_subtree(d) = H(z(d-1) || z(d-1)).
+// Lazily filled once; SSZ list limits bound the depth well below 64. Without
+// this shortcut, merkleizing a list with a large limit (e.g. a transaction
+// ByteList capped at 2^30 bytes = 2^25 chunks) walks tens of millions of
+// virtual zero leaves per item.
+static const uint8_t* zero_subtree_root(size_t depth) noexcept {
+    static uint8_t table[64][32];
+    static size_t  filled = 0;   // levels [0, filled) are valid
+    if (depth >= 64) depth = 63;
+    while (filled <= depth) {
+        if (filled == 0)
+            std::memset(table[0], 0, 32);
+        else
+            sha256_pair(table[filled], table[filled - 1], table[filled - 1]);
+        ++filled;
+    }
+    return table[depth];
+}
+
+// Recursive merkleize over `data_len` bytes of chunk data, padded to `total`
+// (power-of-two) 32-byte leaves. A final partial chunk is zero-padded; leaves
+// beyond the data are zero. Cost is O(data_len/32 · log(total)): empty
+// subtrees resolve via the zero-hash ladder instead of being walked
+// leaf-by-leaf.
 static void merkleize_power_of_two(
     uint8_t out[32],
-    const uint8_t* data,  // actual data chunks (each 32 bytes)
-    size_t actual,        // number of real chunks
-    size_t total          // padded to power-of-two
+    const uint8_t* data,  // raw chunk bytes (not necessarily a multiple of 32)
+    size_t data_len,      // number of valid bytes at `data`
+    size_t total          // leaf count, padded to power-of-two
 ) noexcept {
+    if (data_len == 0) {
+        size_t depth = 0;
+        while ((size_t{1} << depth) < total) ++depth;
+        std::memcpy(out, zero_subtree_root(depth), 32);
+        return;
+    }
     if (total == 1) {
-        if (actual >= 1)
+        if (data_len >= 32) {
             std::memcpy(out, data, 32);
-        else
+        } else {
             std::memset(out, 0, 32);
+            std::memcpy(out, data, data_len);
+        }
         return;
     }
     size_t half = total / 2;
+    size_t half_bytes = half * 32;
     uint8_t left[32], right[32];
-    // Left half
-    size_t left_actual  = (actual > half) ? half : actual;
-    size_t right_actual = (actual > half) ? actual - half : 0;
-    merkleize_power_of_two(left, data, left_actual, half);
-    merkleize_power_of_two(right, data + half * 32, right_actual, half);
+    size_t left_len  = (data_len > half_bytes) ? half_bytes : data_len;
+    size_t right_len = (data_len > half_bytes) ? data_len - half_bytes : 0;
+    merkleize_power_of_two(left, data, left_len, half);
+    merkleize_power_of_two(right, data + half_bytes, right_len, half);
     sha256_pair(out, left, right);
 }
 
@@ -205,18 +235,19 @@ static void merkleize_chunks(uint8_t out[32], const uint8_t* chunks, size_t chun
         return;
     }
     size_t padded = next_pow2(chunk_count);
-    merkleize_power_of_two(out, chunks, chunk_count, padded);
+    merkleize_power_of_two(out, chunks, chunk_count * 32, padded);
 }
 
 // Merkleize with a limit (for lists): pad to next_pow2(limit) virtual leaves.
-// Real chunks are in [data, data + nchunks * 32). Missing chunks are zero.
-static void merkleize(uint8_t out[32], const uint8_t* data, size_t nchunks, size_t limit) noexcept {
+// Real data is the `data_len` bytes at `data` (a trailing partial chunk is
+// zero-padded); leaves past the data are zero.
+static void merkleize(uint8_t out[32], const uint8_t* data, size_t data_len, size_t limit) noexcept {
     if (limit == 0) {
         std::memset(out, 0, 32);
         return;
     }
     size_t padded = next_pow2(limit);
-    merkleize_power_of_two(out, data, nchunks, padded);
+    merkleize_power_of_two(out, data, data_len, padded);
 }
 
 // SSZ container merkleize (for containers with a known set of field roots)

@@ -1,0 +1,25 @@
+[package]
+name    = "z6m-conformance"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "vector-gen"
+path = "src/main.rs"
+
+[dependencies]
+# Canonical wire-contract types — the exact tag zkboost v0.9.0 pins. The C++
+# guest must match these bytes, so vectors are generated from this crate and
+# never hand-rolled.
+stateless-validator-common = { git = "https://github.com/eth-act/ere-guests", tag = "v0.13.0", features = ["host"] }
+
+# Transaction decoding + public-key recovery (mirrors zkboost's input.rs).
+alloy-consensus = "2"
+alloy-eips = "2"
+alloy-rpc-types-debug = "2"
+alloy-primitives = { version = "1.6", features = ["k256", "serde"] }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+serde_json = "1"

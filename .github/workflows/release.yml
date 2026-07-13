@@ -1,8 +1,8 @@
 name: Release
 
 # Triggered by a version tag push (e.g. v0.1.0, v1.2.3-rc1).
-# Builds both SP1 and ZisK guest ELFs, then creates a GitHub Release and
-# attaches all artifacts.
+# Builds the SP1, ZisK, and OpenVM guest ELFs, then creates a GitHub Release
+# and attaches all artifacts.
 
 on:
   push:
@@ -86,6 +86,42 @@ jobs:
           path: dist/
           retention-days: 1
 
+  build-openvm:
+    name: Build OpenVM guest
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: z6m_guest_openvm_${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install xPack riscv-none-elf-gcc
+        run: |
+          npm install --location=global xpm@latest
+          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
+
+      - name: Build OpenVM guest
+        run: make guest_openvm
+
+      - name: Stage release artifacts
+        run: |
+          mkdir -p dist
+          cp build/openvm/z6m_guest.elf  dist/z6m_guest_openvm_${{ github.ref_name }}.elf
+          cp build/openvm/z6m_guest.bin  dist/z6m_guest_openvm_${{ github.ref_name }}.bin
+          cp build/openvm/z6m_guest.text dist/z6m_guest_openvm_${{ github.ref_name }}.text
+
+      - name: Upload staged artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: z6m_guest_openvm_${{ github.ref_name }}
+          path: dist/
+          retention-days: 1
+
   ef-tests:
     name: EF blockchain tests
     runs-on: ubuntu-latest
@@ -112,7 +148,7 @@ jobs:
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-sp1, build-zisk, ef-tests]  # all must succeed
+    needs: [build-sp1, build-zisk, build-openvm, ef-tests]  # all must succeed
     steps:
       - name: Checkout (for release notes from tag annotation)
         uses: actions/checkout@v6
@@ -130,6 +166,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: z6m_guest_zisk_${{ github.ref_name }}
+          path: release-assets/
+
+      - name: Download OpenVM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: z6m_guest_openvm_${{ github.ref_name }}
           path: release-assets/
 
       - name: Compute SHA-256 checksums
@@ -167,7 +209,8 @@ jobs:
           body: |
             ## z6m stateless guest — ${{ github.ref_name }}
 
-            Spec-compliant stateless EVM validator guest programs for SP1 and ZisK zkVMs.
+            Spec-compliant stateless EVM validator guest programs for the SP1,
+            ZisK, and OpenVM zkVMs.
 
             Every artifact is signed with minisign; the matching `<file>.minisig`
             is attached alongside it (verified by zkboost's guest-loader).
@@ -182,6 +225,9 @@ jobs:
             | `z6m_guest_zisk_${{ github.ref_name }}.elf` | ZisK | Full ELF with debug sections |
             | `z6m_guest_zisk_${{ github.ref_name }}.bin` | ZisK | Flat binary image |
             | `z6m_guest_zisk_${{ github.ref_name }}.text` | ZisK | `.text`-only flat binary |
+            | `z6m_guest_openvm_${{ github.ref_name }}.elf` | OpenVM | Full ELF with debug sections |
+            | `z6m_guest_openvm_${{ github.ref_name }}.bin` | OpenVM | Flat binary image |
+            | `z6m_guest_openvm_${{ github.ref_name }}.text` | OpenVM | `.text`-only flat binary |
             | `SHA256SUMS.txt` | — | SHA-256 checksums for all binaries |
 
             ### Build info
@@ -189,6 +235,7 @@ jobs:
             - **Zilkworm tag**: `feat/spec-v0.2`
             - **SP1 ISA**: `rv64im`, stack at `0x7800_0000`, text at `0x7900_0000`
             - **ZisK ISA**: `rv64ima`, ROM at `0x8000_0000`, RAM at `0xa003_0000`
+            - **OpenVM ISA**: `rv32im`, stack at `0x0020_0400`, text at `0x0020_0800`
             - **EF blockchain tests**: ✅ passed before release was published
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}  # rc1 / alpha / beta tags → pre-release

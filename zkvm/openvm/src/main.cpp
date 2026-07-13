@@ -19,15 +19,19 @@ extern "C" int main()
     const z6m::StatelessValidatorOutput result =
         z6m::run_stateless_guest(input_buf.ptr, input_buf.len);
 
-    // Commit SHA-256(root[32] || success[1] || chain_id LE[8]) — 32 bytes.
-    uint8_t digest[32];
-    z6m::commit_public_values(result, digest);
+    // Commit the canonical SSZ StatelessValidationResult (variable length):
+    //   root[32] || success[1] || offset(=37)[4] || chain_config echo
+    // MAX_PUBLIC_VALUES_SIZE (256) matches OpenVM's public-values ceiling.
+    uint8_t pv[z6m::MAX_PUBLIC_VALUES_SIZE];
+    const size_t pv_len = z6m::encode_public_values(result, pv, sizeof(pv));
 
-    // Publish as 8 public-output words (OpenVM's reveal ABI — see
-    // openvm_syscalls.hpp — rather than a single writev-style syscall).
-    for (size_t i = 0; i < sizeof(digest) / 4; ++i) {
-        uint32_t word;
-        std::memcpy(&word, digest + i * 4, 4);
+    // Publish word-by-word (OpenVM's reveal ABI — see openvm_syscalls.hpp).
+    // The final partial word is zero-padded; unrevealed words stay zero, which
+    // zkboost requires for all bytes past the SSZ result.
+    for (size_t i = 0; i * 4 < pv_len; ++i) {
+        uint32_t word = 0;
+        const size_t n = (pv_len - i * 4 < 4) ? pv_len - i * 4 : 4;
+        std::memcpy(&word, pv + i * 4, n);
         openvm::reveal_u32(word, i);
     }
 

@@ -88,9 +88,16 @@ static std::vector<ByteSpan> decode_bytelist_list(ByteSpan data) {
 }
 
 static constexpr size_t EXEC_REQ_FIXED    = 12;
-static constexpr size_t PAYLOAD_FIXED     = 532;
+// ExecutionPayloadV3 (ElectraFulu shape): 13 fixed fields + 3 offsets = 528.
+static constexpr size_t PAYLOAD_V3_FIXED  = 528;
+// ExecutionPayloadV4 (Gloas shape): V3 + block_access_list offset + slot_number.
+static constexpr size_t PAYLOAD_V4_FIXED  = 540;
 static constexpr size_t NPR_FIXED         = 44;
 static constexpr size_t WITNESS_FIXED     = 12;
+// ChainConfig fixed part: chain_id u64 + active_fork offset = 12.
+static constexpr size_t CHAIN_CONFIG_FIXED = 12;
+// ForkConfig fixed part: fork u64 + activation offset + blob_schedule offset = 16.
+static constexpr size_t FORK_CONFIG_FIXED  = 16;
 // SszStatelessInput fixed header (spec / stateless_ssz.py): four u32 offsets
 // (new_payload_request, witness, chain_config, public_keys) = 16 bytes.
 // chain_config is offset-referenced (variable field), confirmed against the
@@ -113,9 +120,30 @@ static SszExecutionRequests decode_execution_requests(ByteSpan s) {
     return er;
 }
 
-static SszExecutionPayload decode_execution_payload(ByteSpan s) {
+// Payload container shape for a fork, mirroring stateless-validator-common
+// v0.13.0 `StatelessInput::from_ssz_bytes`.
+static PayloadShape payload_shape_for_fork(uint64_t fork) {
+    switch (fork) {
+        case FORK_PRAGUE:
+        case FORK_OSAKA:
+        case FORK_BPO1:
+        case FORK_BPO2:
+            return PayloadShape::ElectraFulu;
+        case FORK_AMSTERDAM:
+            return PayloadShape::Gloas;
+        default:
+            // Bellatrix/Capella/Deneb shapes (Paris/Shanghai/Cancun) are out of
+            // scope for this guest; BPO3–5 are rejected upstream too.
+            return PayloadShape::Unsupported;
+    }
+}
+
+static SszExecutionPayload decode_execution_payload(ByteSpan s, PayloadShape shape) {
     SszExecutionPayload p{};
-    if (s.len < PAYLOAD_FIXED) return p;
+    p.shape = shape;
+    const size_t fixed =
+        (shape == PayloadShape::Gloas) ? PAYLOAD_V4_FIXED : PAYLOAD_V3_FIXED;
+    if (s.len < fixed) { p.shape = PayloadShape::Unsupported; return p; }
     size_t cur = 0;
     auto next = [&](size_t n) -> const uint8_t* {
         const uint8_t* r = s.ptr + cur; cur += n; return r;
@@ -137,17 +165,27 @@ static SszExecutionPayload decode_execution_payload(ByteSpan s) {
     uint32_t off_wdl = read_u32le(next(4));
     p.blob_gas_used   = read_u64le(next(8));
     p.excess_blob_gas = read_u64le(next(8));
-    uint32_t off_bal  = read_u32le(next(4));
     uint32_t total    = static_cast<uint32_t>(s.len);
-    p.extra_data        = s.slice(off_extra, off_tx - off_extra);
-    p.transactions      = decode_bytelist_list(s.slice(off_tx, off_wdl - off_tx));
-    p.withdrawals       = decode_fixed_list<SszWithdrawal>(
-        s.slice(off_wdl, off_bal - off_wdl), SSZ_WITHDRAWAL_FIXED_SIZE, decode_withdrawal);
-    p.block_access_list = s.slice(off_bal, total - off_bal);
+    if (shape == PayloadShape::Gloas) {
+        uint32_t off_bal  = read_u32le(next(4));
+        p.slot_number     = read_u64le(next(8));
+        p.block_access_list = s.slice(off_bal, total - off_bal);
+        p.extra_data        = s.slice(off_extra, off_tx - off_extra);
+        p.transactions      = decode_bytelist_list(s.slice(off_tx, off_wdl - off_tx));
+        p.withdrawals       = decode_fixed_list<SszWithdrawal>(
+            s.slice(off_wdl, off_bal - off_wdl), SSZ_WITHDRAWAL_FIXED_SIZE, decode_withdrawal);
+    } else {
+        p.extra_data        = s.slice(off_extra, off_tx - off_extra);
+        p.transactions      = decode_bytelist_list(s.slice(off_tx, off_wdl - off_tx));
+        p.withdrawals       = decode_fixed_list<SszWithdrawal>(
+            s.slice(off_wdl, total - off_wdl), SSZ_WITHDRAWAL_FIXED_SIZE, decode_withdrawal);
+        p.block_access_list = ByteSpan{nullptr, 0};
+        p.slot_number       = 0;
+    }
     return p;
 }
 
-static SszNewPayloadRequest decode_new_payload_request(ByteSpan s) {
+static SszNewPayloadRequest decode_new_payload_request(ByteSpan s, PayloadShape shape) {
     SszNewPayloadRequest r{};
     if (s.len < NPR_FIXED) return r;
     uint32_t off_payload = read_u32le(s.ptr);
@@ -155,7 +193,8 @@ static SszNewPayloadRequest decode_new_payload_request(ByteSpan s) {
     std::memcpy(r.parent_beacon_block_root, s.ptr + 8, 32);
     uint32_t off_er = read_u32le(s.ptr + 40);
     uint32_t total  = static_cast<uint32_t>(s.len);
-    r.execution_payload = decode_execution_payload(s.slice(off_payload, off_hashes - off_payload));
+    r.execution_payload =
+        decode_execution_payload(s.slice(off_payload, off_hashes - off_payload), shape);
     ByteSpan vh = s.slice(off_hashes, off_er - off_hashes);
     size_t n_vh = vh.len / 32;
     r.versioned_hashes.reserve(n_vh);
@@ -181,22 +220,98 @@ static SszExecutionWitness decode_witness(ByteSpan s) {
     return w;
 }
 
+// Decode a canonical ChainConfig (v0.13.0):
+//   { chain_id: u64, active_fork: ForkConfig }  — active_fork offset-referenced.
+//   ForkConfig     = { fork: u64, activation: ForkActivation (offset),
+//                      blob_schedule: List[BlobSchedule, 1] (offset) }
+//   ForkActivation = { block_number: List[u64, 1] (offset),
+//                      timestamp:    List[u64, 1] (offset) }
+// The full slice is retained in `raw` for the byte-exact output echo.
+static SszChainConfig decode_chain_config(ByteSpan s) {
+    SszChainConfig cc{};
+    cc.raw = s;
+    if (s.len < CHAIN_CONFIG_FIXED) return cc;
+    cc.chain_id = read_u64le(s.ptr);
+    uint32_t off_fc = read_u32le(s.ptr + 8);
+    if (off_fc != CHAIN_CONFIG_FIXED || s.len < off_fc + FORK_CONFIG_FIXED) return cc;
+
+    ByteSpan fc = s.from(off_fc);
+    cc.fork = read_u64le(fc.ptr);
+    uint32_t off_act = read_u32le(fc.ptr + 8);
+    uint32_t off_bs  = read_u32le(fc.ptr + 12);
+    if (off_act != FORK_CONFIG_FIXED || off_bs < off_act || off_bs > fc.len) return cc;
+
+    // ForkActivation: two u32 offsets, then 0 or 1 u64 per list.
+    ByteSpan act = fc.slice(off_act, off_bs - off_act);
+    if (act.len < 8) return cc;
+    uint32_t off_bn = read_u32le(act.ptr);
+    uint32_t off_ts = read_u32le(act.ptr + 4);
+    if (off_bn != 8 || off_ts < off_bn || off_ts > act.len) return cc;
+    size_t bn_len = off_ts - off_bn;
+    size_t ts_len = act.len - off_ts;
+    if ((bn_len != 0 && bn_len != 8) || (ts_len != 0 && ts_len != 8)) return cc;
+    if (bn_len == 8) {
+        cc.has_activation_block_number = true;
+        cc.activation_block_number     = read_u64le(act.ptr + off_bn);
+    }
+    if (ts_len == 8) {
+        cc.has_activation_timestamp = true;
+        cc.activation_timestamp     = read_u64le(act.ptr + off_ts);
+    }
+
+    // blob_schedule: List[BlobSchedule, 1] — 0 or 24 bytes of fixed items.
+    ByteSpan bs = fc.from(off_bs);
+    if (bs.len != 0 && bs.len != 24) return cc;
+    if (bs.len == 24) {
+        cc.blob_schedule.present                  = true;
+        cc.blob_schedule.target                   = read_u64le(bs.ptr);
+        cc.blob_schedule.max                      = read_u64le(bs.ptr + 8);
+        cc.blob_schedule.base_fee_update_fraction = read_u64le(bs.ptr + 16);
+    }
+
+    cc.valid = true;
+    return cc;
+}
+
+// validate_chain_config (spec): at least one activation value must be present,
+// and the activation point must be active for the target payload.
+static bool validate_chain_config(const SszChainConfig& cc,
+                                  uint64_t block_number, uint64_t timestamp) {
+    if (!cc.has_activation_block_number && !cc.has_activation_timestamp)
+        return false;
+    if (cc.has_activation_block_number && block_number < cc.activation_block_number)
+        return false;
+    if (cc.has_activation_timestamp && timestamp < cc.activation_timestamp)
+        return false;
+    return true;
+}
+
 static SszStatelessInput decode_stateless_input(ByteSpan s) {
     SszStatelessInput si{};
     if (s.len < STATELESS_INPUT_FIXED) return si;
     // Canonical StatelessInput (stateless_ssz.py, confirmed against spec-CLI
     // output real_input.bin): all four fields are offset-referenced, so the fixed
-    // header is 4 u32 offsets = 16 bytes. chain_config is a variable field whose
-    // payload is the 8-byte chain_id.
+    // header is 4 u32 offsets = 16 bytes.
     uint32_t off_npr = read_u32le(s.ptr);
     uint32_t off_wit = read_u32le(s.ptr + 4);
     uint32_t off_cc  = read_u32le(s.ptr + 8);
     uint32_t off_pk  = read_u32le(s.ptr + 12);
     uint32_t total   = static_cast<uint32_t>(s.len);
-    si.new_payload_request  = decode_new_payload_request(s.slice(off_npr, off_wit - off_npr));
+    if (off_npr != STATELESS_INPUT_FIXED || off_wit < off_npr || off_cc < off_wit ||
+        off_pk < off_cc || off_pk > total)
+        return si;
+
+    // Chain config first: its active fork selects the payload container shape.
+    si.chain_config = decode_chain_config(s.slice(off_cc, off_pk - off_cc));
+    if (!si.chain_config.valid) return si;
+    const PayloadShape shape = payload_shape_for_fork(si.chain_config.fork);
+    if (shape == PayloadShape::Unsupported) return si;
+
+    si.new_payload_request  = decode_new_payload_request(s.slice(off_npr, off_wit - off_npr), shape);
+    if (si.new_payload_request.execution_payload.shape == PayloadShape::Unsupported) return si;
     si.witness              = decode_witness(s.slice(off_wit, off_cc - off_wit));
-    si.chain_config.chain_id = read_u64le(s.ptr + off_cc);
     si.public_keys          = decode_bytelist_list(s.slice(off_pk, total - off_pk));
+    si.valid = true;
     return si;
 }
 
@@ -243,7 +358,7 @@ static void htr_container_list(uint8_t out[32], const std::vector<T>& items,
     for (size_t i = 0; i < n; ++i)
         item_htr(chunks.data() + i * 32, items[i]);
     uint8_t root[32];
-    merkleize(root, chunks.data(), n, limit);
+    merkleize(root, chunks.data(), n * 32, limit);
     mix_in_length(out, root, n);
 }
 
@@ -256,7 +371,10 @@ static void htr_execution_requests(uint8_t out[32], const SszExecutionRequests& 
 }
 
 static void htr_execution_payload(uint8_t out[32], const SszExecutionPayload& p) {
-    uint8_t f[18][32] = {};
+    // ExecutionPayloadV3 (ElectraFulu): 17 fields. ExecutionPayloadV4 (Gloas):
+    // 19 fields — V3 + block_access_list + slot_number. Field count changes the
+    // container merkleization, so the shape must match the wire exactly.
+    uint8_t f[19][32] = {};
     htr_uint256(f[0],  p.parent_hash);
     htr_byte_vector(f[1], p.fee_recipient, 20);
     htr_uint256(f[2],  p.state_root);
@@ -278,14 +396,20 @@ static void htr_execution_payload(uint8_t out[32], const SszExecutionPayload& p)
                           p.transactions[i].ptr, p.transactions[i].len,
                           MAX_BYTES_PER_TRANSACTION);
         uint8_t root[32];
-        merkleize(root, chunks.data(), ntx, MAX_TRANSACTIONS_PER_PAYLOAD);
+        merkleize(root, chunks.data(), ntx * 32, MAX_TRANSACTIONS_PER_PAYLOAD);
         mix_in_length(f[13], root, ntx);
     }
     htr_container_list(f[14], p.withdrawals, MAX_WITHDRAWALS_PER_PAYLOAD, htr_withdrawal);
     htr_uint64(f[15], p.blob_gas_used);
     htr_uint64(f[16], p.excess_blob_gas);
-    htr_byte_list(f[17], p.block_access_list.ptr, p.block_access_list.len, MAX_BLOCK_ACCESS_LIST_BYTES);
-    htr_container(out, f, 18);
+    if (p.shape == PayloadShape::Gloas) {
+        htr_byte_list(f[17], p.block_access_list.ptr, p.block_access_list.len,
+                      MAX_BLOCK_ACCESS_LIST_BYTES);
+        htr_uint64(f[18], p.slot_number);
+        htr_container(out, f, 19);
+    } else {
+        htr_container(out, f, 17);
+    }
 }
 
 static void htr_new_payload_request(uint8_t out[32], const SszNewPayloadRequest& r) {
@@ -297,7 +421,7 @@ static void htr_new_payload_request(uint8_t out[32], const SszNewPayloadRequest&
         for (size_t i = 0; i < n; ++i)
             std::memcpy(chunks.data() + i * 32, r.versioned_hashes[i].data(), 32);
         uint8_t root[32];
-        merkleize(root, chunks.data(), n, MAX_BLOB_COMMITMENTS_PER_BLOCK);
+        merkleize(root, chunks.data(), n * 32, MAX_BLOB_COMMITMENTS_PER_BLOCK);
         mix_in_length(f[1], root, n);
     }
     htr_uint256(f[2], r.parent_beacon_block_root);
@@ -305,15 +429,41 @@ static void htr_new_payload_request(uint8_t out[32], const SszNewPayloadRequest&
     htr_container(out, f, 4);
 }
 
+// Canonical SSZ encoding of `ChainConfig::default()` in
+// stateless-validator-common v0.13.0: chain_id 0, Frontier fork, empty
+// activation lists, empty blob schedule. Used to mirror the Rust guests'
+// `StatelessValidationResult::default()` output when the input fails to
+// decode.
+static const uint8_t kDefaultChainConfigSsz[36] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // chain_id = 0
+    0x0c, 0x00, 0x00, 0x00,                          // offset(active_fork) = 12
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // fork = 0 (Frontier)
+    0x10, 0x00, 0x00, 0x00,                          // offset(activation) = 16
+    0x18, 0x00, 0x00, 0x00,                          // offset(blob_schedule) = 24
+    0x08, 0x00, 0x00, 0x00,                          // activation.block_number off = 8
+    0x08, 0x00, 0x00, 0x00,                          // activation.timestamp off = 8
+                                                     // (both lists empty; blob empty)
+};
+
+// Deterministic failure output for undecodable inputs, mirroring the Rust
+// guests: `StatelessValidationResult::default().to_ssz()`.
+static StatelessValidatorOutput default_failure_output() {
+    StatelessValidatorOutput out{};
+    out.successful_validation = false;
+    out.chain_config_ssz = kDefaultChainConfigSsz;
+    out.chain_config_len = sizeof(kDefaultChainConfigSsz);
+    return out;
+}
+
 StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     // Wire format (EIP-8025 / stateless_ssz.py): a 2-byte big-endian schema id
     // followed by the SSZ-encoded SszStatelessInput. Strip and validate the
-    // prefix before decoding. A missing/wrong prefix means a malformed request:
-    // return a deterministic failure output (zeroed root) rather than decoding
-    // untrusted bytes — zkboost then rejects it on root mismatch.
+    // prefix before decoding. A missing/wrong prefix or undecodable body means
+    // a malformed request: return the canonical default failure output (zero
+    // root, default chain config) — zkboost then rejects it on mismatch.
     if (len < STATELESS_INPUT_SCHEMA_ID_SIZE ||
         (static_cast<uint16_t>((data[0] << 8) | data[1]) != STATELESS_INPUT_SCHEMA_ID)) {
-        return StatelessValidatorOutput{};
+        return default_failure_output();
     }
     data += STATELESS_INPUT_SCHEMA_ID_SIZE;
     len  -= STATELESS_INPUT_SCHEMA_ID_SIZE;
@@ -321,9 +471,27 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     ByteSpan input{data, len};
 
     SszStatelessInput si = decode_stateless_input(input);
+    if (!si.valid) {
+        return default_failure_output();
+    }
 
     uint8_t npr_root[32];
     htr_new_payload_request(npr_root, si.new_payload_request);
+
+    // Prepared early: every path below commits the root + echoed chain config.
+    StatelessValidatorOutput failure{};
+    std::memcpy(failure.new_payload_request_root, npr_root, 32);
+    failure.successful_validation = false;
+    failure.chain_config_ssz = si.chain_config.raw.ptr;
+    failure.chain_config_len = si.chain_config.raw.len;
+
+    // validate_chain_config (spec): inactive/unset activation fails validation
+    // without executing.
+    if (!validate_chain_config(si.chain_config,
+                               si.new_payload_request.execution_payload.block_number,
+                               si.new_payload_request.execution_payload.timestamp)) {
+        return failure;
+    }
 
     bool ok = false;
     evmc::bytes32 computed_state_root{};
@@ -354,10 +522,7 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     const silkworm::ChainConfig& chain_cfg = found ? **found : kAllForksConfig;
 
     if (wit.headers.size() > 256) {
-        StatelessValidatorOutput out{};
-        std::memcpy(out.new_payload_request_root, npr_root, 32);
-        out.successful_validation = false;
-        return out;
+        return failure;
     }
     // Compute keccak256 of each header RLP so we can check the chain.
     std::vector<evmc::bytes32> header_hashes(wit.headers.size());
@@ -372,10 +537,7 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         silkworm::ByteView rlp{wit.headers[i].ptr, wit.headers[i].len};
         silkworm::BlockHeader hdr;
         if (!silkworm::rlp::decode(rlp, hdr) || hdr.parent_hash != header_hashes[i - 1]) {
-            StatelessValidatorOutput out{};
-            std::memcpy(out.new_payload_request_root, npr_root, 32);
-            out.successful_validation = false;
-            return out;
+            return failure;
         }
     }
 
@@ -514,22 +676,27 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     StatelessValidatorOutput out{};
     std::memcpy(out.new_payload_request_root, npr_root, 32);
     out.successful_validation = ok;
-    out.chain_id              = si.chain_config.chain_id;
+    out.chain_config_ssz = si.chain_config.raw.ptr;
+    out.chain_config_len = si.chain_config.raw.len;
     return out;
 }
 
-void commit_public_values(const StatelessValidatorOutput& out, uint8_t digest[32]) {
-    // Canonical serialisation, mirroring StatelessValidatorOutput::serialize()
-    // in ere-guests stateless-validator-common (tag v0.12.1):
-    //   root[0..32] || success[32] || chain_id LE[33..41]
-    uint8_t buf[STATELESS_VALIDATOR_OUTPUT_SIZE];
+size_t encode_public_values(const StatelessValidatorOutput& out, uint8_t* buf, size_t cap) {
+    // Canonical SSZ of StatelessValidationResult (stateless-validator-common
+    // v0.13.0): root[32] || success[1] || offset(=37)[4] || chain_config bytes.
+    // chain_config is the only variable field, so its offset equals the fixed
+    // part size (32 + 1 + 4 = 37). The chain_config bytes are echoed exactly
+    // as decoded from the input.
+    static constexpr size_t FIXED = 32 + 1 + 4;
+    const size_t total = FIXED + out.chain_config_len;
+    if (total > cap) return 0;
+
     std::memcpy(buf, out.new_payload_request_root, 32);
     buf[32] = out.successful_validation ? 1 : 0;
-    const uint64_t chain_id = out.chain_id;
-    for (size_t i = 0; i < 8; ++i)
-        buf[33 + i] = static_cast<uint8_t>(chain_id >> (8 * i)); // little-endian
-
-    sha256_bytes(digest, buf, STATELESS_VALIDATOR_OUTPUT_SIZE);
+    const uint32_t offset = FIXED;
+    std::memcpy(buf + 33, &offset, 4); // u32 LE
+    std::memcpy(buf + FIXED, out.chain_config_ssz, out.chain_config_len);
+    return total;
 }
 
 } // namespace z6m

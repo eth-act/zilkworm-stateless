@@ -47,8 +47,5 @@ third_party/*/*/deps/
 int-test
 zisk-int-test
 int-test-openvm
-/validate_accel.sh
-/tools
-
 
 .DS_Store
