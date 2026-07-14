@@ -38,10 +38,13 @@ set(SILKWORM_MAIN_DIR "${zilkworm_SOURCE_DIR}")
 
 # Phase B: tell the whole build (zilkworm + core + our binary) that we are
 # targeting OpenVM, enabling evmone's `#elif defined(OPENVM)` acceleration
-# guards for keccak256 (keccak.c) and SHA-256 (sha256.cpp). See
-# OPENVM_GUEST_PLAN.md for the Phase A (unaccelerated) baseline this is
-# measured against.
+# guards for keccak256 (keccak.c) and SHA-256 (sha256.cpp).
 add_compile_definitions(OPENVM)
+# Single-threaded bare-metal guest: the thread pointer is never
+# initialised, so `thread_local` (e.g. rlp_sw.hpp's scratch buffer)
+# reads a wild tp and corrupts control flow the first time the MPT
+# encode path runs. Force the plain-static fallback.
+add_compile_definitions(NO_THREAD_LOCAL)
 
 # Build info
 include(CableBuildInfo)

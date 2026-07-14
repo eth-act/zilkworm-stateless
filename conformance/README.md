@@ -36,5 +36,4 @@ exits non-zero on mismatch. Their `make mock-input` targets regenerate the
 fixtures through this crate.
 
 The mock block carries a synthetic witness, so guests are expected to produce
-the `failure` variant; `success` requires real witness ingestion (see
-`ZILKWORM_ZKBOOST_INTEGRATION_PLAN.md` §5a in the workspace root).
+the `failure` variant; `success` requires real witness ingestion.

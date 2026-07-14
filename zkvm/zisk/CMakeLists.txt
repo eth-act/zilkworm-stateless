@@ -48,6 +48,11 @@ set(SILKWORM_MAIN_DIR "${zilkworm_SOURCE_DIR}")
 #   - SHA-256F        -> CSR 0x805  (sha256.cpp)
 # Hotpaths without a ZISK guard fall back to the correct software implementation.
 add_compile_definitions(ZISK)
+# Single-threaded bare-metal guest: the thread pointer is never
+# initialised, so `thread_local` (e.g. rlp_sw.hpp's scratch buffer)
+# reads a wild tp and corrupts control flow the first time the MPT
+# encode path runs. Force the plain-static fallback.
+add_compile_definitions(NO_THREAD_LOCAL)
 
 # Build info
 include(CableBuildInfo)

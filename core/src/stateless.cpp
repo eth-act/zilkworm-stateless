@@ -15,6 +15,7 @@
 #include <zilk_core/core/rlp/decode.hpp>
 #include <zilk_core/core/rlp/encode.hpp>
 #include <zilk_core/core/state/in_memory_state.hpp>
+#include <zilk_core/core/state/witness_state.hpp>
 #include <zilk_core/core/trie_zz/flat_store.hpp>
 #include <zilk_core/core/trie_zz/mpt.hpp>
 #include <zilk_core/core/types/block.hpp>
@@ -499,27 +500,38 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     const auto& wit = si.witness;
     const SszExecutionPayload& ep = si.new_payload_request.execution_payload;
 
-    static const silkworm::ChainConfig kAllForksConfig{
-        .chain_id                  = 0,
-        .homestead_block           = 0,
-        .tangerine_whistle_block   = 0,
-        .spurious_dragon_block     = 0,
-        .byzantium_block           = 0,
-        .constantinople_block      = 0,
-        .petersburg_block          = 0,
-        .istanbul_block            = 0,
-        .berlin_block              = 0,
-        .london_block              = 0,
-        .terminal_total_difficulty = intx::uint256{},
-        .merge_netsplit_block      = 0,
-        .shanghai_time             = 0,
-        .cancun_time               = 0,
-        .prague_time               = 0,
-        .osaka_time                = 0,
-    };
-    const silkworm::ChainConfig* const* found =
-        silkworm::kKnownChainConfigs.find(si.chain_config.chain_id);
-    const silkworm::ChainConfig& chain_cfg = found ? **found : kAllForksConfig;
+    // Execution rules come from the INPUT's chain config (spec: the stateless
+    // guest runs the state-transition function of `active_fork`), not from a
+    // chain_id lookup: devnets/testnets reuse well-known chain ids with their
+    // own fork schedules. A stateless guest executes exactly one block, so a
+    // config with every fork up to `active_fork` enabled from genesis is the
+    // faithful mapping; silkworm's per-fork blob parameters then match the
+    // echoed blob schedule (e.g. BPO2 → {14, 21, 11684671}).
+    silkworm::ChainConfig chain_cfg{};
+    chain_cfg.chain_id                  = si.chain_config.chain_id;
+    chain_cfg.homestead_block           = 0;
+    chain_cfg.tangerine_whistle_block   = 0;
+    chain_cfg.spurious_dragon_block     = 0;
+    chain_cfg.byzantium_block           = 0;
+    chain_cfg.constantinople_block      = 0;
+    chain_cfg.petersburg_block          = 0;
+    chain_cfg.istanbul_block            = 0;
+    chain_cfg.berlin_block              = 0;
+    chain_cfg.london_block              = 0;
+    chain_cfg.terminal_total_difficulty = intx::uint256{};
+    chain_cfg.merge_netsplit_block      = 0;
+    chain_cfg.shanghai_time             = 0;
+    chain_cfg.cancun_time               = 0;
+    chain_cfg.prague_time               = 0;
+    if (si.chain_config.fork >= FORK_OSAKA) chain_cfg.osaka_time = 0;
+    if (si.chain_config.fork >= FORK_BPO1)  chain_cfg.bpo1_time  = 0;
+    if (si.chain_config.fork >= FORK_BPO2)  chain_cfg.bpo2_time  = 0;
+    if (si.chain_config.fork >= FORK_AMSTERDAM) {
+        // Amsterdam EVM rules ride on the Osaka+BPO switches silkworm knows;
+        // refine when silkworm grows an explicit Amsterdam time switch.
+        chain_cfg.bpo3_time = 0;
+        chain_cfg.bpo4_time = 0;
+    }
 
     if (wit.headers.size() > 256) {
         return failure;
@@ -541,15 +553,37 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         }
     }
 
-    // Decode pre-state and MPT witness nodes
-    silkworm::InMemoryState state;
+    // Canonical witness ingestion (EIP-8025 / stateless_ssz.py): witness.state
+    // is a flat list of raw MPT node preimages. Build the node store by
+    // hashing each preimage; execution-time reads resolve lazily through the
+    // trie from the pre-state root (WitnessState), since leaf keys are
+    // keccak(address)/keccak(slot) and cannot be inverted into an eager map.
     silkworm::mpt::FlatNodeStore node_store;
+    {
+        std::vector<silkworm::ByteView> preimages;
+        preimages.reserve(wit.state.size());
+        for (const ByteSpan& n : wit.state)
+            preimages.emplace_back(n.ptr, n.len);
+        node_store.populate_from_preimages(preimages);
+    }
 
-    if (wit.state.size() >= 1 && wit.state[0].len > 0)
-        state = silkworm::read_pre_state_from_rlp({wit.state[0].ptr, wit.state[0].len});
+    // Pre-state root: state_root of the parent header — matched by hash
+    // against the payload's parent_hash (do NOT assume headers[0]). A missing
+    // parent leaves the root zeroed: every trie walk then misses, execution
+    // diverges, and the block deterministically fails validation.
+    evmc::bytes32 pre_state_root{};
+    for (size_t i = 0; i < wit.headers.size(); ++i) {
+        if (!wit.headers[i].len) continue;
+        if (std::memcmp(header_hashes[i].bytes, ep.parent_hash, 32) == 0) {
+            silkworm::ByteView rlp{wit.headers[i].ptr, wit.headers[i].len};
+            silkworm::BlockHeader parent_hdr;
+            if (silkworm::rlp::decode(rlp, parent_hdr))
+                pre_state_root = parent_hdr.state_root;
+            break;
+        }
+    }
 
-    if (wit.state.size() >= 2 && wit.state[1].len > 0)
-        node_store.populate_from_rlp({wit.state[1].ptr, wit.state[1].len});
+    silkworm::WitnessState state{node_store, pre_state_root};
 
     // Register contract bytecode
     for (const ByteSpan& cs : wit.codes) {
@@ -592,7 +626,9 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     block.header.gas_used        = ep.gas_used;
     block.header.timestamp       = ep.timestamp;
     block.header.extra_data      = silkworm::Bytes(ep.extra_data.ptr, ep.extra_data.ptr + ep.extra_data.len);
-    block.header.base_fee_per_gas = intx::be::load<intx::uint256>(ep.base_fee_per_gas);
+    // SSZ uint256 is little-endian on the wire (stateless_ssz.py), unlike the
+    // RLP/EVM big-endian convention used everywhere else in silkworm.
+    block.header.base_fee_per_gas = intx::le::load<intx::uint256>(ep.base_fee_per_gas);
     block.header.blob_gas_used   = ep.blob_gas_used;
     block.header.excess_blob_gas = ep.excess_blob_gas;
     {
@@ -601,12 +637,19 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         block.header.parent_beacon_block_root = pbr;
     }
 
+    // Canonical payload transactions are raw EIP-2718 envelopes (a leading
+    // type byte for typed txs, engine-API style) — NOT RLP-string-wrapped.
+    // `kBoth` accepts either form; a tx that still fails to decode fails the
+    // whole block deterministically rather than being silently skipped
+    // (skipping used to hide the divergence until the block-gas check).
     block.transactions.reserve(ep.transactions.size());
     for (const ByteSpan& ts : ep.transactions) {
         silkworm::Transaction tx;
         silkworm::ByteView view{ts.ptr, ts.len};
-        if (silkworm::rlp::decode(view, tx))
-            block.transactions.push_back(std::move(tx));
+        if (!silkworm::rlp::decode_transaction(view, tx, silkworm::rlp::Eip2718Wrapping::kBoth)) {
+            return failure;
+        }
+        block.transactions.push_back(std::move(tx));
     }
 
     block.withdrawals.emplace();
