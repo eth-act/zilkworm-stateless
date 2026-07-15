@@ -41,3 +41,33 @@ Each zkVM's `CMakeLists.txt` fetches zilkworm from
 
 - `third_party/` — evmone, evmc, blst, intx, nlohmann_json
 - `zilk_core/` — silkworm_core (EVM types, RLP, trie) + silkworm_dev (StateTransition)
+## Releases
+
+Tag-driven releases (`.github/workflows/release.yml`) publish, per zkVM:
+
+- `stateless-validator-zilkworm-<zkvm>-<zkvmVersion>.elf` — the guest program
+- `stateless-validator-zilkworm-<zkvm>-<zkvmVersion>.vk` — its program
+  verifying key, derived directly from the zkVM's SDK (see `keygen/`)
+- `<file>.minisig` for every artifact, plus `SHA256SUMS.txt` (also signed)
+- `minisign.pub` — the signing public key (pin it after first use)
+
+Verify any artifact with:
+
+```bash
+minisign -Vm stateless-validator-zilkworm-sp1-6.3.1.elf -p minisign.pub
+```
+
+zkVM SDK versions are pinned in `ZKVM_VERSIONS`; toolchain provenance is
+documented in `PROVENANCE.md`.
+
+## License
+
+The code in this repository is dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Note that the stateless-execution engine this guest builds
+on (`zilkworm`/`zilk_core`, derived from erigontech/silkworm, and the
+`zvm1` evmone fork) remains licensed under Apache-2.0 by its upstream
+authors; those terms continue to apply to that code.

@@ -1,6 +1,6 @@
 /*
  * Copyright 2026 The Zilkworm Authors
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT OR Apache-2.0
  *
  * Linker script for ZisK zkVM bare-metal C++ guest (rv64ima).
  *
