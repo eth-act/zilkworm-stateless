@@ -29,6 +29,18 @@ guest_openvm:
 		-DCMAKE_BUILD_TYPE=Release
 	cmake --build $(ROOT)/build/openvm -j$(NPROC)
 
+# ── EEST stateless conformance (native host build) ───────────────────────────
+# Runs the exact guest entrypoint natively against EEST stateless fixtures.
+# Extract pairs first:  conformance vector-gen eest --fixtures <dir> --out-dir <pairs>
+conformance-native:
+	cmake -S $(ROOT)/conformance/native -B $(ROOT)/build/conformance \
+		-DCMAKE_BUILD_TYPE=Release
+	cmake --build $(ROOT)/build/conformance -j$(NPROC)
+
+# Usage: make conformance PAIRS=path/to/pairs
+conformance: conformance-native
+	$(ROOT)/build/conformance/z6m_conformance --pairs $(PAIRS)
+
 # ── EF blockchain test suite (native x86_64) ──────────────────────────────────
 test-build:
 	cmake -S $(ROOT)/tests -B $(ROOT)/build/tests \

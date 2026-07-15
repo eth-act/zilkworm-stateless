@@ -51,6 +51,18 @@ enum Command {
     /// Diagnostic: print candidate NPR roots for the mock block under
     /// different payload shapes, to bisect C++ htr mismatches.
     DebugRoots,
+    /// Extract statelessInputBytes/statelessOutputBytes pairs from EEST
+    /// blockchain-test fixtures (tests-zkevm releases) into
+    /// `<name>.input.bin` / `<name>.expected.bin` files consumable by the
+    /// native runner (`conformance/native`) and the zkVM int-test harnesses.
+    Eest {
+        /// Directory containing extracted EEST fixture JSONs (searched
+        /// recursively), e.g. `fixtures/blockchain_tests`.
+        #[arg(long)]
+        fixtures: PathBuf,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
     /// Vectors from fixture files (e.g. zkboost's crates/server/tests/fixture/).
     Real {
         /// SSZ-encoded NewPayloadRequest (fork shape auto-detected newest-first).
@@ -76,6 +88,7 @@ fn main() -> anyhow::Result<()> {
             emit(&out_dir, &name, &input, &chain_config)
         }
         Command::DebugRoots => debug_roots(),
+        Command::Eest { fixtures, out_dir } => extract_eest(&fixtures, &out_dir),
         Command::Real {
             npr,
             chain_config,
@@ -187,6 +200,73 @@ fn debug_roots() -> anyhow::Result<()> {
     };
     println!("payload_v4 root      : {}", hex::encode(npr_gloas.execution_payload.hash_tree_root(&h)));
     println!("npr(Gloas) root      : {}", hex::encode(npr_gloas.hash_tree_root(&h)));
+    Ok(())
+}
+
+/// Walks EEST fixture JSONs and writes one `<name>.input.bin` /
+/// `<name>.expected.bin` pair per block carrying stateless fields. Input
+/// bytes are written verbatim (the rubric forbids host manipulation).
+fn extract_eest(fixtures_dir: &PathBuf, out_dir: &PathBuf) -> anyhow::Result<()> {
+    fn walk(dir: &std::path::Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(&path, files)?;
+            } else if path.extension().is_some_and(|e| e == "json") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(fixtures_dir, &mut files)?;
+    fs::create_dir_all(out_dir)?;
+
+    let decode_hex = |s: &str| hex::decode(s.trim_start_matches("0x"));
+
+    let (mut cases, mut skipped_files) = (0usize, 0usize);
+    for file in &files {
+        let Ok(raw) = fs::read_to_string(file) else {
+            skipped_files += 1;
+            continue;
+        };
+        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            skipped_files += 1;
+            continue;
+        };
+        let Some(tests) = doc.as_object() else { continue };
+        let stem = file.file_stem().unwrap().to_string_lossy();
+
+        for (test_idx, (test_name, test)) in tests.iter().enumerate() {
+            let Some(blocks) = test.get("blocks").and_then(|b| b.as_array()) else {
+                continue;
+            };
+            for (block_idx, block) in blocks.iter().enumerate() {
+                let (Some(input_hex), Some(output_hex)) = (
+                    block.get("statelessInputBytes").and_then(|v| v.as_str()),
+                    block.get("statelessOutputBytes").and_then(|v| v.as_str()),
+                ) else {
+                    continue;
+                };
+                let input = decode_hex(input_hex)?;
+                let expected = decode_hex(output_hex)?;
+
+                // Compact unique name: file stem + test ordinal + block
+                // ordinal (full test id kept in a sidecar for triage).
+                let base = format!("{stem}__t{test_idx}_b{block_idx}");
+                fs::write(out_dir.join(format!("{base}.input.bin")), &input)?;
+                fs::write(out_dir.join(format!("{base}.expected.bin")), &expected)?;
+                fs::write(out_dir.join(format!("{base}.name.txt")), test_name)?;
+                cases += 1;
+            }
+        }
+    }
+    println!(
+        "extracted {cases} case(s) from {} fixture file(s) ({skipped_files} unreadable) into {}",
+        files.len(),
+        out_dir.display()
+    );
     Ok(())
 }
 

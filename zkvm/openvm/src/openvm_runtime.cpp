@@ -26,7 +26,8 @@
  *  Bare-metal _sbrk (bump allocator for newlib malloc)                        *
  * ─────────────────────────────────────────────────────────────────────────── */
 extern "C" {
-extern char _end;  // linker-provided end of BSS
+extern char _end;         // linker-provided end of BSS
+extern char _heap_start;  // zkvm-standards heap base (linker script)
 }
 static char *_heap_ptr = nullptr;
 
@@ -101,10 +102,10 @@ extern void (*__init_array_end[])(void);
 extern "C" int main();
 
 extern "C" void __start() {
-    /* 0. Initialise heap pointer from linker-provided _end symbol.
-          Align to 4 bytes (rv32im word width). */
+    /* 0. Initialise heap pointer from the zkvm-standards _heap_start
+          symbol. Align to 4 bytes (rv32im word width). */
     _heap_ptr = reinterpret_cast<char *>(
-        (reinterpret_cast<uintptr_t>(&_end) + 3) & ~uintptr_t(3));
+        (reinterpret_cast<uintptr_t>(&_heap_start) + 3) & ~uintptr_t(3));
 
     /* 1. Run C++ global constructors. */
     for (auto p = __preinit_array_start; p != __preinit_array_end; ++p)
@@ -112,9 +113,14 @@ extern "C" void __start() {
     for (auto p = __init_array_start; p != __init_array_end; ++p)
         (*p)();
 
-    /* 2. Call guest program. */
-    main();
+    /* 2. Call guest program; propagate its exit code (zkvm-standards
+       termination semantics). OpenVM's TERMINATE encodes the code as a
+       compile-time immediate, so non-zero collapses to exit code 1 —
+       the standard leaves the preserved error-code range vendor-defined. */
+    const int rc = main();
 
-    /* 3. Halt with success (never returns). */
-    openvm::terminate_success();
+    /* 3. Halt (never returns). */
+    if (rc == 0)
+        openvm::terminate_success();
+    openvm::terminate_failure();
 }

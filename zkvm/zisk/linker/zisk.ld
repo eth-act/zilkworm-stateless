@@ -238,6 +238,13 @@ SECTIONS {
     . += 0x40000;
     _init_stack_top = .;
 
+    /* ─── Heap (zkvm-standards static-library-and-linker-script) ────────── */
+    /* Above the stack so heap growth can never clobber stack frames (the
+       previous _end-based heap base overlapped the stack region). */
+    . = ALIGN(16);
+    _heap_start = .;
+    _heap_end   = ORIGIN(RAM) + LENGTH(RAM);
+
     /* ─── Debug sections (zero VMA, not loaded) ─────────────────────────── */
     .stab          0 : { *(.stab) }
     .stabstr       0 : { *(.stabstr) }

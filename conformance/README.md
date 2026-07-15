@@ -37,3 +37,22 @@ fixtures through this crate.
 
 The mock block carries a synthetic witness, so guests are expected to produce
 the `failure` variant; `success` requires real witness ingestion.
+
+## EEST conformance (tests-zkevm releases)
+
+Extract `statelessInputBytes`/`statelessOutputBytes` pairs from an EEST
+fixture release and run them through the native guest build:
+
+```bash
+# 1. Download + unpack fixtures_zkevm.tar.gz from a tests-zkevm release
+# 2. Extract byte pairs (inputs are written verbatim — no host manipulation)
+cargo run --release -- eest --fixtures fixtures/blockchain_tests --out-dir pairs/
+
+# 3. Run the native tier (builds conformance/native on first use)
+make -C .. conformance PAIRS=$PWD/pairs
+```
+
+Current status against `tests-zkevm@v0.6.2`: **0/24,586** — the fixtures
+use the schema-id-versioned wire contract (`0x1501` = Amsterdam rev 1)
+while the guest implements ere-guests v0.13.0 (`0x0001`). The full
+realignment work queue is in `SPEC_DELTA_v0.6.2.md`.

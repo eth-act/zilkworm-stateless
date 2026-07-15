@@ -137,6 +137,11 @@ SECTIONS
                             MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
 
     _end = .; PROVIDE(end = .);
+
+    /* Heap (zkvm-standards static-library-and-linker-script): end of BSS up
+       to GUEST_MAX_MEM. */
+    _heap_start = ALIGN(4);
+    _heap_end   = 0x20000000;
     . = DATA_SEGMENT_END(.);
 
     /* ── Debug sections (discarded in release) ──────────────────────────── */
