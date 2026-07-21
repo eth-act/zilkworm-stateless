@@ -98,6 +98,7 @@ extern void (*__init_array_end[])(void);
 
 /* Forward declaration of the guest entry point (main.cpp). */
 extern "C" int main();
+extern "C" void zkvm_io_flush();
 
 /* ─────────────────────────────────────────────────────────────────────────
  * __start — called from zisk_entrypoint.S after .data/.bss are ready
@@ -123,6 +124,33 @@ extern "C" [[noreturn]] void __start() {
        termination semantics: 0 = success, non-zero = abnormal). */
     const int rc = main();
 
+    /* Flush buffered standard-io output before halting. */
+    zkvm_io_flush();
+
     /* 3. Halt (never returns). */
     sys_halt(static_cast<uint8_t>(rc));
+}
+
+/* ───────── zkvm-standards io-interface ─────────
+ * read_input: the memory-mapped input region (zero-copy, idempotent).
+ * write_output: append into a buffer; flushed to the OUTPUT_ADDR slots
+ * after main returns (__start calls zkvm_io_flush). */
+static uint8_t g_output_buf[1024];
+static size_t g_output_len = 0;
+
+extern "C" void read_input(const uint8_t **buf_ptr, size_t *buf_size) {
+    const ZiskInputBuf in = read_input_raw();
+    *buf_ptr = in.ptr;
+    *buf_size = in.len;
+}
+
+extern "C" void write_output(const uint8_t *output, size_t size) {
+    size_t n = size;
+    if (g_output_len + n > sizeof(g_output_buf)) n = sizeof(g_output_buf) - g_output_len;
+    for (size_t i = 0; i < n; ++i) g_output_buf[g_output_len + i] = output[i];
+    g_output_len += n;
+}
+
+extern "C" void zkvm_io_flush() {
+    write_output_bytes(g_output_buf, g_output_len);
 }

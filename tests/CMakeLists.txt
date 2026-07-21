@@ -10,7 +10,7 @@ include(FetchContent)
 FetchContent_Declare(
     zilkworm
     GIT_REPOSITORY https://github.com/developeruche/zilkworm.git
-    GIT_TAG        feat/spec-v0.2
+    GIT_TAG        644b6ca2490a9bd52ae0fdd2bfba1bbbd4e5a85d # feat/canonical-witness
     GIT_SHALLOW    TRUE
 )
 FetchContent_GetProperties(zilkworm)

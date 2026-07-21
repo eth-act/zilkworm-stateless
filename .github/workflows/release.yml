@@ -16,7 +16,9 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+*"   # v0.1.0, v1.2.3-rc1, etc.
 
 permissions:
-  contents: write   # needed to create a GitHub Release
+  contents: write     # needed to create a GitHub Release
+  id-token: write     # SLSA build provenance (actions/attest-build-provenance)
+  attestations: write
 
 env:
   # Unmodified upstream GCC via xPack — pinned exactly (never @latest):
@@ -124,10 +126,60 @@ jobs:
       - name: Build and run EF tests
         run: make test
 
+  # Reproducible-builds gate: rebuild every guest on an independent runner
+  # and require the ELF sha256 to match the release build's artifact.
+  # Anyone can repeat this locally: same toolchain pin, same source tag,
+  # bit-identical ELF.
+  reproducibility:
+    name: Rebuild ${{ matrix.zkvm }} + compare sha256
+    runs-on: ubuntu-latest
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        zkvm: [sp1, zisk, openvm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read zkVM version
+        id: ver
+        run: |
+          VERSION=$(grep "^${{ matrix.zkvm }}=" ZKVM_VERSIONS | cut -d= -f2)
+          echo "artifact=stateless-validator-zilkworm-${{ matrix.zkvm }}-$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install pinned RISC-V toolchain (xPack)
+        run: |
+          npm install --location=global xpm@latest
+          xpm install "@xpack-dev-tools/riscv-none-elf-gcc@${RISCV_XPACK_VERSION}" --global
+          echo "$HOME/.local/xPacks/@xpack-dev-tools/riscv-none-elf-gcc/${RISCV_XPACK_VERSION}/.content/bin" >> "$GITHUB_PATH"
+
+      - name: Rebuild guest
+        run: make guest_${{ matrix.zkvm }}
+
+      - name: Download release-build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.ver.outputs.artifact }}
+          path: first-build/
+
+      - name: Compare sha256 (bit-reproducibility)
+        run: |
+          a=$(sha256sum "build/${{ matrix.zkvm }}/z6m_guest.elf" | cut -d' ' -f1)
+          b=$(sha256sum "first-build/${{ steps.ver.outputs.artifact }}.elf" | cut -d' ' -f1)
+          echo "rebuild : $a"
+          echo "release : $b"
+          test "$a" = "$b"
+
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [build, ef-tests]  # all must succeed
+    needs: [build, ef-tests, reproducibility]  # all must succeed
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -140,6 +192,15 @@ jobs:
         run: |
           sha256sum *.elf *.vk > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      # SLSA build provenance for every released artifact (verifiable with
+      # `gh attestation verify`), complementing the minisign signatures.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            release-assets/*.elf
+            release-assets/*.vk
 
       # Sign every artifact with minisign. The trusted comment (-t) binds the
       # signature to the artifact's filename, and the public key is published

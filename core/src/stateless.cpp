@@ -1,3 +1,6 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Stateless guest — SSZ input decoding, hash_tree_root commitment, EVM execution.
 
 #include <z6m/stateless.hpp>
@@ -19,6 +22,7 @@
 #include <zilk_core/core/trie_zz/flat_store.hpp>
 #include <zilk_core/core/trie_zz/mpt.hpp>
 #include <zilk_core/core/types/block.hpp>
+#include <zilk_core/core/types/eip_7685_requests.hpp>
 #include <zilk_core/print.hpp>
 
 #include <cstring>
@@ -157,6 +161,11 @@ static SszExecutionRequests decode_execution_requests(ByteSpan s, bool builder_r
             s.slice(off3, off4 - off3), SSZ_BUILDER_DEPOSIT_REQUEST_FIXED_SIZE, decode_builder_deposit_request);
         er.builder_exits = decode_fixed_list<SszBuilderExitRequest>(
             s.slice(off4, end - off4), SSZ_BUILDER_EXIT_REQUEST_FIXED_SIZE, decode_builder_exit_request);
+        er.raw_deposits         = s.slice(off0, off1 - off0);
+        er.raw_withdrawals      = s.slice(off1, off2 - off1);
+        er.raw_consolidations   = s.slice(off2, off3 - off2);
+        er.raw_builder_deposits = s.slice(off3, off4 - off3);
+        er.raw_builder_exits    = s.slice(off4, end - off4);
     } else {
         uint32_t off0 = read_u32le(s.ptr);
         uint32_t off1 = read_u32le(s.ptr + 4);
@@ -167,6 +176,9 @@ static SszExecutionRequests decode_execution_requests(ByteSpan s, bool builder_r
             s.slice(off1, off2 - off1), SSZ_WITHDRAWAL_REQUEST_FIXED_SIZE, decode_withdrawal_request);
         er.consolidations = decode_fixed_list<SszConsolidationRequest>(
             s.slice(off2, end - off2), SSZ_CONSOLIDATION_REQUEST_FIXED_SIZE, decode_consolidation_request);
+        er.raw_deposits       = s.slice(off0, off1 - off0);
+        er.raw_withdrawals    = s.slice(off1, off2 - off1);
+        er.raw_consolidations = s.slice(off2, end - off2);
     }
     return er;
 }
@@ -878,6 +890,28 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         w.amount          = sw.amount;
         std::memcpy(w.address.bytes, sw.address, 20);
         block.withdrawals->push_back(w);
+    }
+
+    // Requests hash (EIP-7685): the payload does not carry it, but the
+    // block-end system calls (EIP-7002/7251/8282 queue rotation) only run —
+    // and the input's execution_requests only get validated — when the
+    // header presents one. Compute it from the input's requests; execution
+    // then recomputes from logs + system calls and must match. The SSZ
+    // fixed encodings are exactly the flat per-type encodings.
+    // Gated to the Amsterdam01 schema to leave the validated legacy path
+    // untouched.
+    if (si.schema == InputSchema::Amsterdam01) {
+        const auto& er = si.new_payload_request.execution_requests;
+        silkworm::FlatRequests wanted;
+        auto add_req = [&wanted](silkworm::FlatRequestType t, const ByteSpan& raw) {
+            if (raw.len) wanted.add_request(t, silkworm::Bytes{raw.ptr, raw.len});
+        };
+        add_req(silkworm::FlatRequestType::kDepositRequest,        er.raw_deposits);
+        add_req(silkworm::FlatRequestType::kWithdrawalRequest,     er.raw_withdrawals);
+        add_req(silkworm::FlatRequestType::kConsolidationRequest,  er.raw_consolidations);
+        add_req(silkworm::FlatRequestType::kBuilderDepositRequest, er.raw_builder_deposits);
+        add_req(silkworm::FlatRequestType::kBuilderExitRequest,    er.raw_builder_exits);
+        block.header.requests_hash = wanted.calculate_sha256();
     }
 
     // PoS blocks have no ommers; roots are computed from decoded body

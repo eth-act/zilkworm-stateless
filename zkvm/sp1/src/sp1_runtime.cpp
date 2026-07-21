@@ -299,3 +299,26 @@ extern "C" void __start() {
     /* 4. Halt (never returns). */
     syscall_halt(static_cast<uint8_t>(rc));
 }
+
+/* ───────── zkvm-standards io-interface ─────────
+ * read_input: the first hint-stream vector, cached so the call is
+ * idempotent as the standard requires. write_output: append to the
+ * SP1 public-values stream. */
+static const uint8_t *g_input_ptr = nullptr;
+static size_t g_input_len = 0;
+static bool g_input_read = false;
+
+extern "C" void read_input(const uint8_t **buf_ptr, size_t *buf_size) {
+    if (!g_input_read) {
+        const ReadVecResult v = read_vec_raw();
+        g_input_ptr = v.ptr;
+        g_input_len = v.len;
+        g_input_read = true;
+    }
+    *buf_ptr = g_input_ptr;
+    *buf_size = g_input_len;
+}
+
+extern "C" void write_output(const uint8_t *output, size_t size) {
+    syscall_write(SP1_FD_PUBLIC_VALUES, output, size);
+}

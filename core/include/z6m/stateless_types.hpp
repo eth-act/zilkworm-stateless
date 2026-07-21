@@ -1,3 +1,6 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /* z6m/stateless_types.hpp — SSZ container types for Amsterdam stateless validation.
  *
  * Spec reference: stateless_ssz.py (Amsterdam fork)
@@ -103,6 +106,13 @@ struct SszExecutionRequests {
     std::vector<SszBuilderDepositRequest> builder_deposits;
     std::vector<SszBuilderExitRequest>    builder_exits;
     bool                                  has_builder_requests{false};
+    // Raw wire bytes per list (the SSZ fixed encodings are exactly the
+    // EIP-7685 flat request encodings) — used for requests_hash.
+    ByteSpan raw_deposits{nullptr, 0};
+    ByteSpan raw_withdrawals{nullptr, 0};
+    ByteSpan raw_consolidations{nullptr, 0};
+    ByteSpan raw_builder_deposits{nullptr, 0};
+    ByteSpan raw_builder_exits{nullptr, 0};
 };
 
 // Payload container shape, selected by the active fork (stateless-validator-common

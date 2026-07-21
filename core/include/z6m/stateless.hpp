@@ -1,3 +1,6 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /* z6m/stateless.hpp — Spec-compliant stateless guest API. */
 #pragma once
 #include <cstddef>

@@ -10,13 +10,13 @@ Legend: ✅ conforms · 🟡 partial / conditional · ❌ gap (migration needed)
 | Standard | SP1 | ZisK | OpenVM | Notes |
 |---|---|---|---|---|
 | riscv-target (`riscv64im_zicclsm`) | 🟡 | 🟡 | ❌ | see §1 |
-| io-interface (`read_input`/`write_output`) | ❌ | ❌ | ❌ | see §2 |
+| io-interface (`read_input`/`write_output`) | ✅* | ✅* | ✅* | fixed this audit, see §2 |
 | static-library-and-linker-script | 🟡 | 🟡 | 🟡 | see §3 |
 | standard-termination-semantics | ✅* | ✅* | ✅* | fixed this audit, see §4 |
 | memory-layout-restrictions | ✅ | ✅ | ✅ | see §5 |
 | memory-safety-guard-regions | 🏛/🟡 | 🏛/🟡 | 🏛/🟡 | see §6 |
 | instruction-address-misaligned | 🏛 | 🏛 | 🏛 | see §7 |
-| c-interface-accelerators | ❌ | ❌ | ❌ | see §8 |
+| c-interface-accelerators | 🟡 | 🟡 | 🟡 | export side done, see §8 |
 
 ## 1. riscv-target — 🟡/❌
 
@@ -35,7 +35,16 @@ F/D, LP64 soft-float, static ELF, little-endian, flat memory).
   target. Out of guest control (🏛-ish), but it means the OpenVM ELF cannot
   claim the standard target triple.
 
-## 2. io-interface — ❌ all three (biggest migration, as predicted)
+## 2. io-interface — ✅ (migrated in this audit)
+
+All three runtimes now implement the standard `read_input`/`write_output`
+C ABI (`zkvm/common/zkvm_io.h`), and the three per-VM `main.cpp`s collapsed
+into ONE shared `zkvm/common/main.cpp`. SP1: cached hint read + streamed
+PV write. ZisK: zero-copy mapped input + buffered write flushed by
+`zkvm_io_flush()` from `__start`. OpenVM: cached hint read + buffered write
+revealed word-wise at flush. Verified byte-exact on all three executors
+(SP1 116,728 cycles / OpenVM 106,297 / ZisK 97,159 steps on the mock
+vector). Original migration notes kept below for reference.
 
 Standard: `void read_input(const uint8_t** buf, size_t* len)` (idempotent,
 zero-copy, cannot fail) + `void write_output(const uint8_t*, size_t)`
@@ -129,7 +138,16 @@ Pure VM semantics (misaligned jump ⇒ abnormal termination, no rounding).
 Guest obligation is nil; our code is C/C++ compiled `-march` without the C
 extension, so IALIGN=32 as assumed. Nothing to do in this repo.
 
-## 8. c-interface-accelerators — ❌ all three
+## 8. c-interface-accelerators — 🟡 (export side done)
+
+`zkvm/common/zkvm_accelerators.{h,cpp}` now exports the standard ABI from
+every guest for the two accelerators actually consumed (zkvm_keccak256,
+zkvm_sha256), implemented over the per-VM accelerated primitives already
+linked in. Remaining for ✅: flip zvm1's internal `#ifdef SP1/ZISK/OPENVM`
+hooks to consume this ABI (needs cycle re-benchmarks on the tuned paths)
+and implement the remaining header functions (curve ops, modexp, ...) —
+left undefined on purpose so consumers fail at link rather than silently.
+Original notes below.
 
 Standard ships `zkvm_accelerators.h` (keccak256, sha256, secp256k1/r1,
 bn254, BLS12-381, modexp, ripemd160, blake2f — 8-byte-aligned structs,
@@ -147,8 +165,7 @@ the SP1 hint-read fast path was cycle-tuned).
 
 1. ~~Termination semantics~~ — done (this audit).
 2. ~~`_heap_start`/`_heap_end` + ZisK heap/stack overlap~~ — done (this audit).
-3. io-interface shims + single shared `main.cpp` (~2 d) — do before
-   ere-guests' tooling lands so the ELF interface is already standard.
+3. ~~io-interface shims + single shared `main.cpp`~~ — done (this audit).
 4. c-interface-accelerators shims in the three runtimes + zvm1 switch (~3 d).
 5. ZisK `-march=rv64im` (drop `a`) spike (~½ d).
 6. Stack-guard gap in zisk.ld + `-fstack-clash-protection` across

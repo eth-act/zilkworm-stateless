@@ -70,4 +70,21 @@ The code in this repository is dual-licensed under either of
 at your option. Note that the stateless-execution engine this guest builds
 on (`zilkworm`/`zilk_core`, derived from erigontech/silkworm, and the
 `zvm1` evmone fork) remains licensed under Apache-2.0 by its upstream
-authors; those terms continue to apply to that code.
+authors; those terms continue to apply to that code. See `LICENSING.md`
+for the full dependency audit and the rubric scope question.
+
+### Dependency license audit
+
+| Component | License | Redistribution |
+|---|---|---|
+| zilkworm / zilk_core (silkworm fork) | Apache-2.0 | ✅ compatible |
+| zvm1 (evmone fork, incl. evmc) | Apache-2.0 | ✅ compatible |
+| intx | Apache-2.0 | ✅ compatible |
+| blst | ISC | ✅ compatible |
+| ethash/keccak (evmone-bundled) | Apache-2.0 | ✅ compatible |
+| nlohmann-json | MIT | ✅ compatible |
+| zkvm-standards headers (`zkvm/common/zkvm_io.h`) | Apache-2.0 OR MIT | ✅ compatible |
+| xPack riscv-none-elf-gcc (build-time only) | GPL-3.0 w/ runtime-lib exception | ✅ toolchain only, exception covers linked runtime |
+
+All redistribution-clean; no copyleft obligations attach to the released
+ELFs beyond the GCC runtime-library exception's standard terms.

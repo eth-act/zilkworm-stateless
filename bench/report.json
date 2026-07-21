@@ -1,0 +1,18 @@
+{
+  "schema": "zilkworm-bench-v1",
+  "timestamp": "2026-07-16T16:52:28Z",
+  "git": "70ba87b",
+  "zkvm_versions": {
+    "sp1": "6.3.1",
+    "zisk": "1.0.0-alpha",
+    "openvm": "2.0.0-rc.3"
+  },
+  "results": [
+    {"zkvm":"sp1","input":"mock","status":"ok","cycles":116638},
+    {"zkvm":"openvm","input":"mock","status":"ok","cycles":106297},
+    {"zkvm":"zisk","input":"mock","status":"ok","cycles":97159},
+    {"zkvm":"sp1","input":"real","status":"ok","cycles":130703771},
+    {"zkvm":"openvm","input":"real","status":"ok","cycles":1563693988},
+    {"zkvm":"zisk","input":"real","status":"ok","cycles":149999581}
+  ]
+}

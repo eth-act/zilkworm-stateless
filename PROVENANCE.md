@@ -47,8 +47,31 @@ it on first use and verify with:
 minisign -Vm <artifact> -p minisign.pub
 ```
 
-## Reproducibility (in progress)
+## Reproducibility
 
-Bit-reproducible builds (two independent CI builds asserting identical
-SHA-256) are planned; see `ZILKWORM_READINESS_PLAN.md` Phase 3.4. Until
-then, SHA256SUMS.txt in each release is itself signed.
+Releases are gated on bit-reproducibility: the `reproducibility` job in
+`.github/workflows/release.yml` rebuilds every guest on an independent
+runner and fails the release unless the ELF SHA-256 matches the release
+build's. The build is made deterministic by:
+
+- the exact toolchain pin above (never `@latest`);
+- `zilkworm` fetched by **commit hash** (not branch) in every
+  `CMakeLists.txt`, with its own submodules (`zvm1`, `intx`) pinned by the
+  usual gitmodules commit pointers;
+- `-ffile-prefix-map` in every target toolchain file, so no absolute build
+  paths reach the ELF;
+- the Cable build-info library invoked with empty `GIT_DESCRIBE`/
+  `GIT_BRANCH` (no git state or timestamps embedded).
+
+To reproduce a released ELF locally: install the pinned xPack toolchain,
+check out the release tag, run `make guest_<zkvm>`, and compare
+`build/<zkvm>/z6m_guest.elf` against the signed SHA256SUMS.txt.
+
+## Build attestations (SLSA provenance)
+
+Every released `.elf`/`.vk` also carries a GitHub build-provenance
+attestation (`actions/attest-build-provenance`), verifiable with:
+
+```bash
+gh attestation verify <artifact> --repo <owner>/zilkworm-stateless
+```

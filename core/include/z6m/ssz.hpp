@@ -1,3 +1,6 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /* z6m/ssz.hpp — Minimal SSZ decode + hash_tree_root helpers.
  *
  * Spec reference: stateless_ssz.py (Amsterdam fork)

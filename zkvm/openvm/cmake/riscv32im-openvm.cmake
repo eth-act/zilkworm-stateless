@@ -54,7 +54,8 @@ set(BUILD_SHARED_LIBS OFF)
 
 # rv32im: 32-bit RISC-V with integer multiply/divide (no floating-point, no
 # hardware atomics — OpenVM's compiler lowers atomic ops to non-atomic ones).
-set(_common_flags "-march=rv32im -mabi=ilp32 -ffunction-sections -fdata-sections -fno-PIC")
+# Reproducible builds: strip absolute paths from __FILE__/debug info.
+set(_common_flags "-march=rv32im -mabi=ilp32 -ffunction-sections -fdata-sections -fno-PIC -ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=build")
 set(_opt_flags    "-O3 -DNDEBUG -fno-stack-protector -fno-builtin-trap")
 set(_no_cxx       "-fno-exceptions -fno-rtti -fno-threadsafe-statics")
 

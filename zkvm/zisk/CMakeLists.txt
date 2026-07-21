@@ -18,7 +18,7 @@ include(FetchContent)
 FetchContent_Declare(
     zilkworm
     GIT_REPOSITORY https://github.com/developeruche/zilkworm.git
-    GIT_TAG        feat/spec-v0.2
+    GIT_TAG        644b6ca2490a9bd52ae0fdd2bfba1bbbd4e5a85d # feat/canonical-witness
     GIT_SHALLOW    TRUE
 )
 
@@ -87,7 +87,8 @@ set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/zisk.ld")
 add_executable(z6m_guest
     src/zisk_entrypoint.S
     src/zisk_runtime.cpp
-    src/main.cpp
+    ../common/main.cpp
+    ../common/zkvm_accelerators.cpp
     src/atomic_stubs.c
     src/memcpy.cpp
     src/memmove.cpp
