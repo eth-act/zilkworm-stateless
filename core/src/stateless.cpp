@@ -864,6 +864,9 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         std::memcpy(pbr.bytes, si.new_payload_request.parent_beacon_block_root, 32);
         block.header.parent_beacon_block_root = pbr;
     }
+    // EIP-7843 (Amsterdam): the payload's slot number feeds SLOTNUM.
+    if (ep.shape == PayloadShape::Gloas)
+        block.header.slot_number = ep.slot_number;
 
     // Canonical payload transactions are raw EIP-2718 envelopes (a leading
     // type byte for typed txs, engine-API style) — NOT RLP-string-wrapped.
