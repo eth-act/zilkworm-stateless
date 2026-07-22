@@ -22,7 +22,7 @@ permissions:
 
 env:
   # Unmodified upstream GCC via xPack — pinned exactly (never @latest):
-  # provenance and reproducibility both depend on this. Matches PROVENANCE.md.
+  # provenance and reproducibility both depend on this.
   RISCV_XPACK_VERSION: "15.2.0-1.1"
 
 jobs:
@@ -253,7 +253,7 @@ jobs:
             echo ""
             echo "### Build provenance"
             echo ""
-            echo "- Toolchain: unmodified xPack riscv-none-elf-gcc \`${RISCV_XPACK_VERSION}\` (see PROVENANCE.md)"
+            echo "- Toolchain: unmodified xPack riscv-none-elf-gcc \`${RISCV_XPACK_VERSION}\`"
             echo "- EF blockchain tests passed before this release was published"
           } > release-body.md
 

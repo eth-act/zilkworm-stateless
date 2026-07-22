@@ -40,9 +40,9 @@ run_one() { # zkvm binary input_name input_path metric_regex
 echo "bench: execution-level cycle counts" >&2
 for entry in "${INPUTS[@]}"; do
   name="${entry%%:*}"; path="${entry#*:}"
-  run_one sp1    "$ROOT/int-test/target/release/z6m_cpp_prover"           "$name" "$path" 'total cycles *: *[0-9]+'
-  run_one openvm "$ROOT/int-test-openvm/target/release/z6m_openvm_prover" "$name" "$path" 'total cycles *: *[0-9]+'
-  run_one zisk   "$ROOT/zisk-int-test/target/release/z6m_zisk_prover"     "$name" "$path" 'execution steps *: *[0-9]+'
+  run_one sp1    "$ROOT/int-tests/sp1/target/release/z6m_cpp_prover"           "$name" "$path" 'total cycles *: *[0-9]+'
+  run_one openvm "$ROOT/int-tests/openvm/target/release/z6m_openvm_prover" "$name" "$path" 'total cycles *: *[0-9]+'
+  run_one zisk   "$ROOT/int-tests/zisk/target/release/z6m_zisk_prover"     "$name" "$path" 'execution steps *: *[0-9]+'
 done
 
 {

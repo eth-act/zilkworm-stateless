@@ -44,8 +44,6 @@ third_party/*/*/deps/
 .editorconfig
 .claude/worktrees
 
-int-test
-zisk-int-test
-int-test-openvm
+int-tests
 
 .DS_Store

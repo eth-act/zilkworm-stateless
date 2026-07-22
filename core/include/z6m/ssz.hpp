@@ -22,6 +22,7 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -166,15 +167,6 @@ static void htr_byte_list(uint8_t out[32], const uint8_t* data, size_t data_len,
 
 // Merkleize implementations
 
-// Next power of two >= n (minimum 1).
-static size_t next_pow2(size_t n) noexcept {
-    if (n <= 1) return 1;
-    --n;
-    n |= n >> 1; n |= n >> 2; n |= n >> 4;
-    n |= n >> 8; n |= n >> 16; n |= n >> 32;
-    return n + 1;
-}
-
 // Root of an all-zero subtree with 2^depth leaves:
 //   zero_subtree(0) = 32 zero bytes, zero_subtree(d) = H(z(d-1) || z(d-1)).
 // Lazily filled once; SSZ list limits bound the depth well below 64. Without
@@ -237,11 +229,11 @@ static void merkleize_chunks(uint8_t out[32], const uint8_t* chunks, size_t chun
         sha256_pair(out, ZERO_HASH, ZERO_HASH);
         return;
     }
-    size_t padded = next_pow2(chunk_count);
+    size_t padded = std::bit_ceil(chunk_count == 0 ? size_t{1} : chunk_count);
     merkleize_power_of_two(out, chunks, chunk_count * 32, padded);
 }
 
-// Merkleize with a limit (for lists): pad to next_pow2(limit) virtual leaves.
+// Merkleize with a limit (for lists): pad to std::bit_ceil(limit) virtual leaves.
 // Real data is the `data_len` bytes at `data` (a trailing partial chunk is
 // zero-padded); leaves past the data are zero.
 static void merkleize(uint8_t out[32], const uint8_t* data, size_t data_len, size_t limit) noexcept {
@@ -249,7 +241,7 @@ static void merkleize(uint8_t out[32], const uint8_t* data, size_t data_len, siz
         std::memset(out, 0, 32);
         return;
     }
-    size_t padded = next_pow2(limit);
+    size_t padded = std::bit_ceil(limit == 0 ? size_t{1} : limit);
     merkleize_power_of_two(out, data, data_len, padded);
 }
 

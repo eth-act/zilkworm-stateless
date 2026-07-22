@@ -45,13 +45,6 @@ static constexpr size_t MAX_BYTES_PER_HEADER                    = 1u << 10;
 static constexpr size_t MAX_PUBLIC_KEYS                         = 1u << 20;
 static constexpr size_t MAX_BYTES_PER_PUBLIC_KEY                = 65;
 
-// ─── Opaque byte-span view (no ownership) ────────────────────────────────────
-// Reuse ByteSpan from ssz.hpp.
-
-// ─── Decoded container structs ────────────────────────────────────────────────
-// These are lightweight views / decoded representations, not full SSZ containers.
-// Only the fields needed for hash_tree_root and logical processing are stored.
-
 // SszWithdrawal (spec §stateless_ssz.py::SszWithdrawal)
 struct SszWithdrawal {
     uint64_t index;
@@ -223,8 +216,6 @@ struct SszStatelessInput {
     InputSchema            schema{InputSchema::Legacy0001};
     bool                   valid;       // false → deterministic default failure output
 };
-
-// ─── SSZ fixed sizes for well-known structures (used during deserialization) ──
 
 // SszWithdrawal is fixed-size: 8+8+20+8 = 44 bytes
 static constexpr size_t SSZ_WITHDRAWAL_FIXED_SIZE = 44;

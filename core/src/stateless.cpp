@@ -135,8 +135,6 @@ static constexpr size_t CHAIN_CONFIG_FIXED = 12;
 static constexpr size_t FORK_CONFIG_FIXED  = 16;
 // SszStatelessInput fixed header (spec / stateless_ssz.py): four u32 offsets
 // (new_payload_request, witness, chain_config, public_keys) = 16 bytes.
-// chain_config is offset-referenced (variable field), confirmed against the
-// canonical spec-CLI output (tools/real_input/real_input.bin).
 static constexpr size_t STATELESS_INPUT_FIXED = 16;
 
 static SszExecutionRequests decode_execution_requests(ByteSpan s, bool builder_requests) {
@@ -184,7 +182,6 @@ static SszExecutionRequests decode_execution_requests(ByteSpan s, bool builder_r
 }
 
 // Payload container shape for a fork, mirroring stateless-validator-common
-// v0.13.0 `StatelessInput::from_ssz_bytes`.
 static PayloadShape payload_shape_for_fork(uint64_t fork) {
     switch (fork) {
         case FORK_PRAGUE:
@@ -457,8 +454,6 @@ static SszStatelessInput decode_stateless_input_amsterdam01(ByteSpan s) {
     if (si.new_payload_request.execution_payload.shape == PayloadShape::Unsupported) return si;
     si.witness = decode_witness(s.slice(off_wit, off_cc - off_wit));
 
-    // public_keys: List[ByteVector[65], ...] — fixed-size items, so the wire is
-    // just n*65 bytes with no offset table.
     {
         ByteSpan pk = s.slice(off_pk, total - off_pk);
         if (pk.len % MAX_BYTES_PER_PUBLIC_KEY != 0) return si;
@@ -608,9 +603,6 @@ static void htr_new_payload_request(uint8_t out[32], const SszNewPayloadRequest&
     htr_container(out, f, 4);
 }
 
-// Canonical SSZ encoding of `ChainConfig::default()` in
-// stateless-validator-common v0.13.0: chain_id 0, Frontier fork, empty
-// activation lists, empty blob schedule. Used to mirror the Rust guests'
 // `StatelessValidationResult::default()` output when the input fails to
 // decode.
 static const uint8_t kDefaultChainConfigSsz[36] = {
