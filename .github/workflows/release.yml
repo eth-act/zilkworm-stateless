@@ -67,7 +67,10 @@ jobs:
       - name: Install protoc (keygen build dependency)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends protobuf-compiler
+          # protobuf-compiler = protoc; libprotobuf-dev ships the well-known
+          # type definitions (google/protobuf/empty.proto, …) that sp1's
+          # worker.proto imports — without them protoc fails "File not found".
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
 
       # ZisK only: the ROM-merkle verkey requires the ZisK proving key and a
       # one-time rom-setup for this ELF (large download — free disk first).
@@ -80,6 +83,10 @@ jobs:
       - name: Install ZisK proving key + rom-setup (zisk)
         if: matrix.zkvm == 'zisk'
         run: |
+          # cargo-zisk links against the OpenMPI runtime (libmpi.so.40), which
+          # isn't on the runner by default.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libopenmpi-dev openmpi-bin
           # ZISK_VERSION must NOT carry a leading 'v' — ziskup adds it itself.
           # GH_RUNNER=1 makes ziskup non-interactive: it forces the CPU build and
           # installs the proving key (SETUP_KEY=proving) instead of prompting on
