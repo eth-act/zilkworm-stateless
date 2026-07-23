@@ -93,7 +93,9 @@ jobs:
           # /dev/tty, which doesn't exist on a CI runner.
           curl -sSfL https://raw.githubusercontent.com/0xPolygonHermez/zisk/main/ziskup/install.sh \
             | GH_RUNNER=1 ZISK_VERSION="${{ steps.ver.outputs.version }}" bash
-          export PATH="$HOME/.zisk/bin:$PATH"
+          # ziskup installs cargo-zisk under ~/.config/.zisk/bin (older layouts
+          # used ~/.zisk/bin) — add both so we don't depend on the exact version.
+          export PATH="$HOME/.config/.zisk/bin:$HOME/.zisk/bin:$PATH"
           cargo-zisk rom-setup -e build/zisk/z6m_guest.elf
 
       - name: Generate program verifying key
