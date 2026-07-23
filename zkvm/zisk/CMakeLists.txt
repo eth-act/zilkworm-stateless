@@ -19,7 +19,8 @@ FetchContent_Declare(
     zilkworm
     GIT_REPOSITORY https://github.com/developeruche/zilkworm.git
     GIT_TAG        c3ebf73a8b9ba1957ee473d19c51cb6041c88f53 # feat/canonical-witness
-    GIT_SHALLOW    TRUE
+    # No GIT_SHALLOW: the pin is a commit on feat/canonical-witness, not on the
+    # default branch (master), so a shallow clone can't reach it — full clone.
 )
 
 FetchContent_GetProperties(zilkworm)
