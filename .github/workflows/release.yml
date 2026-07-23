@@ -1,8 +1,14 @@
 name: Release
 
 # Triggered by a version tag push (e.g. v0.1.0, v1.2.3-rc1).
-# Builds the SP1, ZisK, and OpenVM guest ELFs, then creates a GitHub Release
-# and attaches all artifacts.
+# Builds the SP1, ZisK, and OpenVM guest ELFs with a pinned, unmodified
+# toolchain, derives each program verifying key directly from the zkVM's own
+# SDK, signs every artifact with minisign (public key shipped in the release),
+# and publishes a GitHub Release.
+#
+# Artifact naming follows the EF zkEVM guest-program standard:
+#   stateless-validator-zilkworm-<zkVMName>-<zkVMVersion>.elf / .vk
+# zkVM versions come from the checked-in ZKVM_VERSIONS file.
 
 on:
   push:
@@ -10,117 +16,92 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+*"   # v0.1.0, v1.2.3-rc1, etc.
 
 permissions:
-  contents: write   # needed to create a GitHub Release
+  contents: write     # needed to create a GitHub Release
+  id-token: write     # SLSA build provenance (actions/attest-build-provenance)
+  attestations: write
+
+env:
+  # Unmodified upstream GCC via xPack — pinned exactly (never @latest):
+  # provenance and reproducibility both depend on this.
+  RISCV_XPACK_VERSION: "15.2.0-1.1"
 
 jobs:
-  build-sp1:
-    name: Build SP1 guest
+  build:
+    name: Build ${{ matrix.zkvm }} guest + vk
     runs-on: ubuntu-latest
-    outputs:
-      artifact-name: z6m_guest_sp1_${{ github.ref_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        zkvm: [sp1, zisk, openvm]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Read zkVM version
+        id: ver
+        run: |
+          VERSION=$(grep "^${{ matrix.zkvm }}=" ZKVM_VERSIONS | cut -d= -f2)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact=stateless-validator-zilkworm-${{ matrix.zkvm }}-$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install CMake 3.28+
         uses: lukka/get-cmake@latest
         with:
           cmakeVersion: "~3.28.0"
 
-      - name: Install xPack riscv-none-elf-gcc
+      - name: Install xPack riscv-none-elf-gcc (pinned)
         run: |
           npm install --location=global xpm@latest
-          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
+          xpm install "@xpack-dev-tools/riscv-none-elf-gcc@${RISCV_XPACK_VERSION}" --global
+          "$HOME/.local/xPacks/@xpack-dev-tools/riscv-none-elf-gcc/${RISCV_XPACK_VERSION}/.content/bin/riscv-none-elf-gcc" --version
 
-      - name: Build SP1 guest
-        run: make guest_sp1
+      - name: Build guest ELF
+        run: make guest_${{ matrix.zkvm }}
 
-      # Rename artifacts to include the zkVM and version in the filename.
+      - name: Install Rust (for keygen)
+        uses: dtolnay/rust-toolchain@stable
+
+      # ZisK only: the ROM-merkle verkey requires the ZisK proving key and a
+      # one-time rom-setup for this ELF (large download — free disk first).
+      - name: Free up disk space (zisk)
+        if: matrix.zkvm == 'zisk'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install ZisK proving key + rom-setup (zisk)
+        if: matrix.zkvm == 'zisk'
+        run: |
+          # ZISK_VERSION must NOT carry a leading 'v' — ziskup adds it itself.
+          curl -sSfL https://raw.githubusercontent.com/0xPolygonHermez/zisk/main/ziskup/install.sh \
+            | ZISK_VERSION="${{ steps.ver.outputs.version }}" bash
+          export PATH="$HOME/.zisk/bin:$PATH"
+          cargo-zisk rom-setup -e build/zisk/z6m_guest.elf
+
+      - name: Generate program verifying key
+        # Derived from the zkVM's own SDK (see keygen/src/main.rs) — no
+        # intermediary tooling. Version pins in keygen/Cargo.toml must match
+        # ZKVM_VERSIONS.
+        run: |
+          cargo run --release \
+            --manifest-path keygen/Cargo.toml \
+            --features ${{ matrix.zkvm }} -- \
+            --elf build/${{ matrix.zkvm }}/z6m_guest.elf \
+            --out build/${{ matrix.zkvm }}/z6m_guest.vk
+
       - name: Stage release artifacts
         run: |
           mkdir -p dist
-          cp build/sp1/z6m_guest.elf  dist/z6m_guest_sp1_${{ github.ref_name }}.elf
-          cp build/sp1/z6m_guest.bin  dist/z6m_guest_sp1_${{ github.ref_name }}.bin
-          cp build/sp1/z6m_guest.text dist/z6m_guest_sp1_${{ github.ref_name }}.text
+          cp build/${{ matrix.zkvm }}/z6m_guest.elf "dist/${{ steps.ver.outputs.artifact }}.elf"
+          cp build/${{ matrix.zkvm }}/z6m_guest.vk  "dist/${{ steps.ver.outputs.artifact }}.vk"
 
       - name: Upload staged artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: z6m_guest_sp1_${{ github.ref_name }}
+          name: ${{ steps.ver.outputs.artifact }}
           path: dist/
           retention-days: 1   # only needed until the release job picks them up
-
-  build-zisk:
-    name: Build ZisK guest
-    runs-on: ubuntu-latest
-    outputs:
-      artifact-name: z6m_guest_zisk_${{ github.ref_name }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install CMake 3.28+
-        uses: lukka/get-cmake@latest
-        with:
-          cmakeVersion: "~3.28.0"
-
-      - name: Install xPack riscv-none-elf-gcc
-        run: |
-          npm install --location=global xpm@latest
-          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
-
-      - name: Build ZisK guest
-        run: make guest_zisk
-
-      - name: Stage release artifacts
-        run: |
-          mkdir -p dist
-          cp build/zisk/z6m_guest.elf  dist/z6m_guest_zisk_${{ github.ref_name }}.elf
-          cp build/zisk/z6m_guest.bin  dist/z6m_guest_zisk_${{ github.ref_name }}.bin
-          cp build/zisk/z6m_guest.text dist/z6m_guest_zisk_${{ github.ref_name }}.text
-
-      - name: Upload staged artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: z6m_guest_zisk_${{ github.ref_name }}
-          path: dist/
-          retention-days: 1
-
-  build-openvm:
-    name: Build OpenVM guest
-    runs-on: ubuntu-latest
-    outputs:
-      artifact-name: z6m_guest_openvm_${{ github.ref_name }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install CMake 3.28+
-        uses: lukka/get-cmake@latest
-        with:
-          cmakeVersion: "~3.28.0"
-
-      - name: Install xPack riscv-none-elf-gcc
-        run: |
-          npm install --location=global xpm@latest
-          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
-
-      - name: Build OpenVM guest
-        run: make guest_openvm
-
-      - name: Stage release artifacts
-        run: |
-          mkdir -p dist
-          cp build/openvm/z6m_guest.elf  dist/z6m_guest_openvm_${{ github.ref_name }}.elf
-          cp build/openvm/z6m_guest.bin  dist/z6m_guest_openvm_${{ github.ref_name }}.bin
-          cp build/openvm/z6m_guest.text dist/z6m_guest_openvm_${{ github.ref_name }}.text
-
-      - name: Upload staged artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: z6m_guest_openvm_${{ github.ref_name }}
-          path: dist/
-          retention-days: 1
 
   ef-tests:
     name: EF blockchain tests
@@ -145,100 +126,145 @@ jobs:
       - name: Build and run EF tests
         run: make test
 
+  # Reproducible-builds gate: rebuild every guest on an independent runner
+  # and require the ELF sha256 to match the release build's artifact.
+  # Anyone can repeat this locally: same toolchain pin, same source tag,
+  # bit-identical ELF.
+  reproducibility:
+    name: Rebuild ${{ matrix.zkvm }} + compare sha256
+    runs-on: ubuntu-latest
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        zkvm: [sp1, zisk, openvm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read zkVM version
+        id: ver
+        run: |
+          VERSION=$(grep "^${{ matrix.zkvm }}=" ZKVM_VERSIONS | cut -d= -f2)
+          echo "artifact=stateless-validator-zilkworm-${{ matrix.zkvm }}-$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install pinned RISC-V toolchain (xPack)
+        run: |
+          npm install --location=global xpm@latest
+          xpm install "@xpack-dev-tools/riscv-none-elf-gcc@${RISCV_XPACK_VERSION}" --global
+          echo "$HOME/.local/xPacks/@xpack-dev-tools/riscv-none-elf-gcc/${RISCV_XPACK_VERSION}/.content/bin" >> "$GITHUB_PATH"
+
+      - name: Rebuild guest
+        run: make guest_${{ matrix.zkvm }}
+
+      - name: Download release-build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.ver.outputs.artifact }}
+          path: first-build/
+
+      - name: Compare sha256 (bit-reproducibility)
+        run: |
+          a=$(sha256sum "build/${{ matrix.zkvm }}/z6m_guest.elf" | cut -d' ' -f1)
+          b=$(sha256sum "first-build/${{ steps.ver.outputs.artifact }}.elf" | cut -d' ' -f1)
+          echo "rebuild : $a"
+          echo "release : $b"
+          test "$a" = "$b"
+
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-sp1, build-zisk, build-openvm, ef-tests]  # all must succeed
+    needs: [build, ef-tests, reproducibility]  # all must succeed
     steps:
-      - name: Checkout (for release notes from tag annotation)
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0   # full history so we can read the tag message
-
-      # Download all artifact bundles into a single staging directory.
-      - name: Download SP1 artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
-          name: z6m_guest_sp1_${{ github.ref_name }}
           path: release-assets/
-
-      - name: Download ZisK artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: z6m_guest_zisk_${{ github.ref_name }}
-          path: release-assets/
-
-      - name: Download OpenVM artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: z6m_guest_openvm_${{ github.ref_name }}
-          path: release-assets/
+          merge-multiple: true
 
       - name: Compute SHA-256 checksums
         working-directory: release-assets
         run: |
-          sha256sum *.elf *.bin *.text > SHA256SUMS.txt
+          sha256sum *.elf *.vk > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      # Sign every artifact with minisign so consumers (e.g. zkboost's
-      # guest-loader, which calls minisign::verify) can authenticate the ELF it
-      # downloads. Each `<file>` produces a `<file>.minisig` whose raw contents
-      # are served at the signature URL. Requires two repository secrets:
+      # SLSA build provenance for every released artifact (verifiable with
+      # `gh attestation verify`), complementing the minisign signatures.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            release-assets/*.elf
+            release-assets/*.vk
+
+      # Sign every artifact with minisign. The trusted comment (-t) binds the
+      # signature to the artifact's filename, and the public key is published
+      # as a release asset so consumers can verify without any out-of-band
+      # channel (pin it after first use). Requires three repository secrets:
       #   MINISIGN_SECRET_KEY — the minisign secret key file contents
-      #   MINISIGN_PASSWORD   — its password ("" if the key is unencrypted)
+      #   MINISIGN_PUBLIC_KEY — the minisign public key file contents
+      #   MINISIGN_PASSWORD   — the secret key password ("" if unencrypted)
       - name: Sign artifacts with minisign
         working-directory: release-assets
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PUBLIC_KEY: ${{ secrets.MINISIGN_PUBLIC_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends minisign
           printf '%s\n' "$MINISIGN_SECRET_KEY" > minisign.key
-          for f in *.elf *.bin *.text SHA256SUMS.txt; do
-            printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s minisign.key -m "$f"
+          printf '%s\n' "$MINISIGN_PUBLIC_KEY" > minisign.pub
+
+          for f in *.elf *.vk SHA256SUMS.txt; do
+            echo "Signing $f..."
+            echo "$MINISIGN_PASSWORD" | minisign -Sm "$f" -s minisign.key -x "$f.minisig" -t "$f"
           done
+
           rm -f minisign.key
-          ls -la *.minisig
+          ls -la
+
+      - name: Generate release notes
+        run: |
+          {
+            echo "## zilkworm stateless-validator guests — ${{ github.ref_name }}"
+            echo ""
+            echo "Spec-compliant stateless EVM validator guest programs (C++,"
+            echo "silkworm-based) for the SP1, ZisK, and OpenVM zkVMs."
+            echo ""
+            echo "Every artifact is minisign-signed (\`<file>.minisig\`, trusted"
+            echo "comment = filename); the signing public key is attached as"
+            echo "\`minisign.pub\`. Verifying keys are derived directly from each"
+            echo "zkVM's SDK at the version encoded in the artifact name."
+            echo ""
+            echo "| Artifact | Verifying key |"
+            echo "|---|---|"
+            RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+            for elf in release-assets/*.elf; do
+              name=$(basename "$elf")
+              vk="${name%.elf}.vk"
+              echo "| [\`$name\`]($RELEASE_URL/$name) | [\`$vk\`]($RELEASE_URL/$vk) |"
+            done
+            echo ""
+            echo "### Build provenance"
+            echo ""
+            echo "- Toolchain: unmodified xPack riscv-none-elf-gcc \`${RISCV_XPACK_VERSION}\`"
+            echo "- EF blockchain tests passed before this release was published"
+          } > release-body.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: "z6m stateless guest ${{ github.ref_name }}"
-          body: |
-            ## z6m stateless guest — ${{ github.ref_name }}
-
-            Spec-compliant stateless EVM validator guest programs for the SP1,
-            ZisK, and OpenVM zkVMs.
-
-            Every artifact is signed with minisign; the matching `<file>.minisig`
-            is attached alongside it (verified by zkboost's guest-loader).
-
-            ### Artifacts
-
-            | File | zkVM | Description |
-            |---|---|---|
-            | `z6m_guest_sp1_${{ github.ref_name }}.elf` | SP1 | Full ELF with debug sections |
-            | `z6m_guest_sp1_${{ github.ref_name }}.bin` | SP1 | Flat binary image |
-            | `z6m_guest_sp1_${{ github.ref_name }}.text` | SP1 | `.text`-only flat binary |
-            | `z6m_guest_zisk_${{ github.ref_name }}.elf` | ZisK | Full ELF with debug sections |
-            | `z6m_guest_zisk_${{ github.ref_name }}.bin` | ZisK | Flat binary image |
-            | `z6m_guest_zisk_${{ github.ref_name }}.text` | ZisK | `.text`-only flat binary |
-            | `z6m_guest_openvm_${{ github.ref_name }}.elf` | OpenVM | Full ELF with debug sections |
-            | `z6m_guest_openvm_${{ github.ref_name }}.bin` | OpenVM | Flat binary image |
-            | `z6m_guest_openvm_${{ github.ref_name }}.text` | OpenVM | `.text`-only flat binary |
-            | `SHA256SUMS.txt` | — | SHA-256 checksums for all binaries |
-
-            ### Build info
-
-            - **Zilkworm tag**: `feat/spec-v0.2`
-            - **SP1 ISA**: `rv64im`, stack at `0x7800_0000`, text at `0x7900_0000`
-            - **ZisK ISA**: `rv64ima`, ROM at `0x8000_0000`, RAM at `0xa003_0000`
-            - **OpenVM ISA**: `rv32im`, stack at `0x0020_0400`, text at `0x0020_0800`
-            - **EF blockchain tests**: ✅ passed before release was published
+          name: "zilkworm stateless guests ${{ github.ref_name }}"
+          body_path: release-body.md
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}  # rc1 / alpha / beta tags → pre-release
+          prerelease: ${{ contains(github.ref_name, '-') }}  # rc/alpha/beta tags → pre-release
           files: release-assets/*
           fail_on_unmatched_files: true
           generate_release_notes: false

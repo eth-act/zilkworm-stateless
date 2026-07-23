@@ -1,3 +1,6 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Stateless guest — SSZ input decoding, hash_tree_root commitment, EVM execution.
 
 #include <z6m/stateless.hpp>
@@ -19,10 +22,18 @@
 #include <zilk_core/core/trie_zz/flat_store.hpp>
 #include <zilk_core/core/trie_zz/mpt.hpp>
 #include <zilk_core/core/types/block.hpp>
+#include <zilk_core/core/types/eip_7685_requests.hpp>
 #include <zilk_core/print.hpp>
 
 #include <cstring>
 #include <vector>
+
+#ifdef Z6M_NATIVE_DEBUG
+#include <cstdio>
+#define Z6M_DBG(...) std::fprintf(stderr, __VA_ARGS__)
+#else
+#define Z6M_DBG(...) ((void)0)
+#endif
 
 namespace z6m {
 
@@ -61,6 +72,22 @@ static SszConsolidationRequest decode_consolidation_request(ByteSpan s) {
     return c;
 }
 
+static SszBuilderDepositRequest decode_builder_deposit_request(ByteSpan s) {
+    SszBuilderDepositRequest d{};
+    std::memcpy(d.pubkey,                 s.ptr, 48);  s = s.from(48);
+    std::memcpy(d.withdrawal_credentials, s.ptr, 32);  s = s.from(32);
+    d.amount = read_u64le(s.ptr);                      s = s.from(8);
+    std::memcpy(d.signature,              s.ptr, 96);
+    return d;
+}
+
+static SszBuilderExitRequest decode_builder_exit_request(ByteSpan s) {
+    SszBuilderExitRequest e{};
+    std::memcpy(e.source_address, s.ptr, 20);  s = s.from(20);
+    std::memcpy(e.pubkey,         s.ptr, 48);
+    return e;
+}
+
 template <typename T, typename DecFn>
 static std::vector<T> decode_fixed_list(ByteSpan data, size_t item_size, DecFn fn) {
     std::vector<T> out;
@@ -88,7 +115,14 @@ static std::vector<ByteSpan> decode_bytelist_list(ByteSpan data) {
     return out;
 }
 
-static constexpr size_t EXEC_REQ_FIXED    = 12;
+static constexpr size_t EXEC_REQ_FIXED    = 12;   // 3 offsets (legacy 0x0001)
+static constexpr size_t EXEC_REQ_V2_FIXED = 20;   // 5 offsets (Amsterdam rev-1)
+static constexpr size_t SSZ_BUILDER_DEPOSIT_REQUEST_FIXED_SIZE = 184;
+static constexpr size_t SSZ_BUILDER_EXIT_REQUEST_FIXED_SIZE    = 68;
+static constexpr size_t MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD = 1u << 6;
+static constexpr size_t MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD    = 1u << 4;
+// Amsterdam rev-1: BAL byte-list limit is MAX_BYTES_PER_TRANSACTION (2^30).
+static constexpr size_t BAL_HTR_LIMIT_AMSTERDAM01 = 1u << 30;
 // ExecutionPayloadV3 (ElectraFulu shape): 13 fixed fields + 3 offsets = 528.
 static constexpr size_t PAYLOAD_V3_FIXED  = 528;
 // ExecutionPayloadV4 (Gloas shape): V3 + block_access_list offset + slot_number.
@@ -101,28 +135,53 @@ static constexpr size_t CHAIN_CONFIG_FIXED = 12;
 static constexpr size_t FORK_CONFIG_FIXED  = 16;
 // SszStatelessInput fixed header (spec / stateless_ssz.py): four u32 offsets
 // (new_payload_request, witness, chain_config, public_keys) = 16 bytes.
-// chain_config is offset-referenced (variable field), confirmed against the
-// canonical spec-CLI output (tools/real_input/real_input.bin).
 static constexpr size_t STATELESS_INPUT_FIXED = 16;
 
-static SszExecutionRequests decode_execution_requests(ByteSpan s) {
+static SszExecutionRequests decode_execution_requests(ByteSpan s, bool builder_requests) {
     SszExecutionRequests er{};
-    if (s.len < EXEC_REQ_FIXED) return er;
-    uint32_t off0 = read_u32le(s.ptr);
-    uint32_t off1 = read_u32le(s.ptr + 4);
-    uint32_t off2 = read_u32le(s.ptr + 8);
-    uint32_t end  = static_cast<uint32_t>(s.len);
-    er.deposits      = decode_fixed_list<SszDepositRequest>(
-        s.slice(off0, off1 - off0), SSZ_DEPOSIT_REQUEST_FIXED_SIZE, decode_deposit_request);
-    er.withdrawals   = decode_fixed_list<SszWithdrawalRequest>(
-        s.slice(off1, off2 - off1), SSZ_WITHDRAWAL_REQUEST_FIXED_SIZE, decode_withdrawal_request);
-    er.consolidations = decode_fixed_list<SszConsolidationRequest>(
-        s.slice(off2, end - off2), SSZ_CONSOLIDATION_REQUEST_FIXED_SIZE, decode_consolidation_request);
+    er.has_builder_requests = builder_requests;
+    const size_t fixed = builder_requests ? EXEC_REQ_V2_FIXED : EXEC_REQ_FIXED;
+    if (s.len < fixed) return er;
+    uint32_t end = static_cast<uint32_t>(s.len);
+    if (builder_requests) {
+        uint32_t off0 = read_u32le(s.ptr);
+        uint32_t off1 = read_u32le(s.ptr + 4);
+        uint32_t off2 = read_u32le(s.ptr + 8);
+        uint32_t off3 = read_u32le(s.ptr + 12);
+        uint32_t off4 = read_u32le(s.ptr + 16);
+        er.deposits      = decode_fixed_list<SszDepositRequest>(
+            s.slice(off0, off1 - off0), SSZ_DEPOSIT_REQUEST_FIXED_SIZE, decode_deposit_request);
+        er.withdrawals   = decode_fixed_list<SszWithdrawalRequest>(
+            s.slice(off1, off2 - off1), SSZ_WITHDRAWAL_REQUEST_FIXED_SIZE, decode_withdrawal_request);
+        er.consolidations = decode_fixed_list<SszConsolidationRequest>(
+            s.slice(off2, off3 - off2), SSZ_CONSOLIDATION_REQUEST_FIXED_SIZE, decode_consolidation_request);
+        er.builder_deposits = decode_fixed_list<SszBuilderDepositRequest>(
+            s.slice(off3, off4 - off3), SSZ_BUILDER_DEPOSIT_REQUEST_FIXED_SIZE, decode_builder_deposit_request);
+        er.builder_exits = decode_fixed_list<SszBuilderExitRequest>(
+            s.slice(off4, end - off4), SSZ_BUILDER_EXIT_REQUEST_FIXED_SIZE, decode_builder_exit_request);
+        er.raw_deposits         = s.slice(off0, off1 - off0);
+        er.raw_withdrawals      = s.slice(off1, off2 - off1);
+        er.raw_consolidations   = s.slice(off2, off3 - off2);
+        er.raw_builder_deposits = s.slice(off3, off4 - off3);
+        er.raw_builder_exits    = s.slice(off4, end - off4);
+    } else {
+        uint32_t off0 = read_u32le(s.ptr);
+        uint32_t off1 = read_u32le(s.ptr + 4);
+        uint32_t off2 = read_u32le(s.ptr + 8);
+        er.deposits      = decode_fixed_list<SszDepositRequest>(
+            s.slice(off0, off1 - off0), SSZ_DEPOSIT_REQUEST_FIXED_SIZE, decode_deposit_request);
+        er.withdrawals   = decode_fixed_list<SszWithdrawalRequest>(
+            s.slice(off1, off2 - off1), SSZ_WITHDRAWAL_REQUEST_FIXED_SIZE, decode_withdrawal_request);
+        er.consolidations = decode_fixed_list<SszConsolidationRequest>(
+            s.slice(off2, end - off2), SSZ_CONSOLIDATION_REQUEST_FIXED_SIZE, decode_consolidation_request);
+        er.raw_deposits       = s.slice(off0, off1 - off0);
+        er.raw_withdrawals    = s.slice(off1, off2 - off1);
+        er.raw_consolidations = s.slice(off2, end - off2);
+    }
     return er;
 }
 
 // Payload container shape for a fork, mirroring stateless-validator-common
-// v0.13.0 `StatelessInput::from_ssz_bytes`.
 static PayloadShape payload_shape_for_fork(uint64_t fork) {
     switch (fork) {
         case FORK_PRAGUE:
@@ -186,7 +245,9 @@ static SszExecutionPayload decode_execution_payload(ByteSpan s, PayloadShape sha
     return p;
 }
 
-static SszNewPayloadRequest decode_new_payload_request(ByteSpan s, PayloadShape shape) {
+static SszNewPayloadRequest decode_new_payload_request(ByteSpan s, PayloadShape shape,
+                                                       bool builder_requests,
+                                                       size_t bal_htr_limit) {
     SszNewPayloadRequest r{};
     if (s.len < NPR_FIXED) return r;
     uint32_t off_payload = read_u32le(s.ptr);
@@ -196,6 +257,7 @@ static SszNewPayloadRequest decode_new_payload_request(ByteSpan s, PayloadShape 
     uint32_t total  = static_cast<uint32_t>(s.len);
     r.execution_payload =
         decode_execution_payload(s.slice(off_payload, off_hashes - off_payload), shape);
+    r.execution_payload.bal_htr_limit = bal_htr_limit;
     ByteSpan vh = s.slice(off_hashes, off_er - off_hashes);
     size_t n_vh = vh.len / 32;
     r.versioned_hashes.reserve(n_vh);
@@ -204,7 +266,8 @@ static SszNewPayloadRequest decode_new_payload_request(ByteSpan s, PayloadShape 
         std::memcpy(h.data(), vh.ptr + i * 32, 32);
         r.versioned_hashes.push_back(h);
     }
-    r.execution_requests = decode_execution_requests(s.slice(off_er, total - off_er));
+    r.execution_requests =
+        decode_execution_requests(s.slice(off_er, total - off_er), builder_requests);
     return r;
 }
 
@@ -274,6 +337,52 @@ static SszChainConfig decode_chain_config(ByteSpan s) {
     return cc;
 }
 
+// Decode the simplified ChainConfig of the Amsterdam rev-1 (0x1501) schema
+// (tests-zkevm v0.6.x stateless_ssz.py):
+//   ChainConfig    = { chain_id: u64, active_fork: ForkConfig (offset) }
+//   ForkConfig     = { activation: ForkActivation (offset) }   — NO fork field,
+//                                                                NO blob_schedule
+//   ForkActivation = { block_number: List[u64, 1] (offset),
+//                      timestamp:    List[u64, 1] (offset) }
+// The fork is implied by the schema id itself (fork_index in the prefix), so
+// the decoded `fork` is pinned to FORK_AMSTERDAM for the shared shape/config
+// logic. The full slice is retained in `raw` for the byte-exact output echo.
+static SszChainConfig decode_chain_config_amsterdam01(ByteSpan s) {
+    SszChainConfig cc{};
+    cc.raw  = s;
+    cc.fork = FORK_AMSTERDAM;
+    if (s.len < CHAIN_CONFIG_FIXED) return cc;
+    cc.chain_id = read_u64le(s.ptr);
+    uint32_t off_fc = read_u32le(s.ptr + 8);
+    if (off_fc != CHAIN_CONFIG_FIXED || s.len < off_fc + 4) return cc;
+
+    // ForkConfig: a single u32 offset to activation.
+    ByteSpan fc = s.from(off_fc);
+    uint32_t off_act = read_u32le(fc.ptr);
+    if (off_act != 4 || off_act > fc.len) return cc;
+
+    // ForkActivation: two u32 offsets, then 0 or 1 u64 per list.
+    ByteSpan act = fc.from(off_act);
+    if (act.len < 8) return cc;
+    uint32_t off_bn = read_u32le(act.ptr);
+    uint32_t off_ts = read_u32le(act.ptr + 4);
+    if (off_bn != 8 || off_ts < off_bn || off_ts > act.len) return cc;
+    size_t bn_len = off_ts - off_bn;
+    size_t ts_len = act.len - off_ts;
+    if ((bn_len != 0 && bn_len != 8) || (ts_len != 0 && ts_len != 8)) return cc;
+    if (bn_len == 8) {
+        cc.has_activation_block_number = true;
+        cc.activation_block_number     = read_u64le(act.ptr + off_bn);
+    }
+    if (ts_len == 8) {
+        cc.has_activation_timestamp = true;
+        cc.activation_timestamp     = read_u64le(act.ptr + off_ts);
+    }
+
+    cc.valid = true;
+    return cc;
+}
+
 // validate_chain_config (spec): at least one activation value must be present,
 // and the activation point must be active for the target payload.
 static bool validate_chain_config(const SszChainConfig& cc,
@@ -308,10 +417,52 @@ static SszStatelessInput decode_stateless_input(ByteSpan s) {
     const PayloadShape shape = payload_shape_for_fork(si.chain_config.fork);
     if (shape == PayloadShape::Unsupported) return si;
 
-    si.new_payload_request  = decode_new_payload_request(s.slice(off_npr, off_wit - off_npr), shape);
+    si.new_payload_request  = decode_new_payload_request(
+        s.slice(off_npr, off_wit - off_npr), shape,
+        /*builder_requests=*/false, /*bal_htr_limit=*/MAX_BLOCK_ACCESS_LIST_BYTES);
     if (si.new_payload_request.execution_payload.shape == PayloadShape::Unsupported) return si;
     si.witness              = decode_witness(s.slice(off_wit, off_cc - off_wit));
     si.public_keys          = decode_bytelist_list(s.slice(off_pk, total - off_pk));
+    si.valid = true;
+    return si;
+}
+
+// Amsterdam rev-1 (0x1501) top-level input. Same 4-offset fixed header as the
+// legacy contract, but: simplified ChainConfig (no fork/blob_schedule),
+// Amsterdam-fixed Gloas payload shape, 5-list execution requests (builder
+// deposits/exits), BAL htr limit 2^30, and public_keys as a list of FIXED
+// ByteVector[65] items (no per-item offset table).
+static SszStatelessInput decode_stateless_input_amsterdam01(ByteSpan s) {
+    SszStatelessInput si{};
+    si.schema = InputSchema::Amsterdam01;
+    if (s.len < STATELESS_INPUT_FIXED) return si;
+    uint32_t off_npr = read_u32le(s.ptr);
+    uint32_t off_wit = read_u32le(s.ptr + 4);
+    uint32_t off_cc  = read_u32le(s.ptr + 8);
+    uint32_t off_pk  = read_u32le(s.ptr + 12);
+    uint32_t total   = static_cast<uint32_t>(s.len);
+    if (off_npr != STATELESS_INPUT_FIXED || off_wit < off_npr || off_cc < off_wit ||
+        off_pk < off_cc || off_pk > total)
+        return si;
+
+    si.chain_config = decode_chain_config_amsterdam01(s.slice(off_cc, off_pk - off_cc));
+    if (!si.chain_config.valid) return si;
+
+    si.new_payload_request = decode_new_payload_request(
+        s.slice(off_npr, off_wit - off_npr), PayloadShape::Gloas,
+        /*builder_requests=*/true, /*bal_htr_limit=*/BAL_HTR_LIMIT_AMSTERDAM01);
+    if (si.new_payload_request.execution_payload.shape == PayloadShape::Unsupported) return si;
+    si.witness = decode_witness(s.slice(off_wit, off_cc - off_wit));
+
+    {
+        ByteSpan pk = s.slice(off_pk, total - off_pk);
+        if (pk.len % MAX_BYTES_PER_PUBLIC_KEY != 0) return si;
+        size_t n = pk.len / MAX_BYTES_PER_PUBLIC_KEY;
+        si.public_keys.reserve(n);
+        for (size_t i = 0; i < n; ++i)
+            si.public_keys.push_back(
+                pk.slice(i * MAX_BYTES_PER_PUBLIC_KEY, MAX_BYTES_PER_PUBLIC_KEY));
+    }
     si.valid = true;
     return si;
 }
@@ -363,12 +514,34 @@ static void htr_container_list(uint8_t out[32], const std::vector<T>& items,
     mix_in_length(out, root, n);
 }
 
+static void htr_builder_deposit_request(uint8_t out[32], const SszBuilderDepositRequest& d) {
+    uint8_t f[4][32] = {};
+    htr_byte_vector(f[0], d.pubkey, 48);
+    htr_uint256(f[1], d.withdrawal_credentials);
+    htr_uint64(f[2], d.amount);
+    htr_byte_vector(f[3], d.signature, 96);
+    htr_container(out, f, 4);
+}
+
+static void htr_builder_exit_request(uint8_t out[32], const SszBuilderExitRequest& e) {
+    uint8_t f[2][32] = {};
+    htr_byte_vector(f[0], e.source_address, 20);
+    htr_byte_vector(f[1], e.pubkey, 48);
+    htr_container(out, f, 2);
+}
+
 static void htr_execution_requests(uint8_t out[32], const SszExecutionRequests& er) {
-    uint8_t f[3][32] = {};
+    uint8_t f[5][32] = {};
     htr_container_list(f[0], er.deposits,       MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,       htr_deposit_request);
     htr_container_list(f[1], er.withdrawals,    MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,    htr_withdrawal_request);
     htr_container_list(f[2], er.consolidations, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD, htr_consolidation_request);
-    htr_container(out, f, 3);
+    if (!er.has_builder_requests) {
+        htr_container(out, f, 3);
+        return;
+    }
+    htr_container_list(f[3], er.builder_deposits, MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD, htr_builder_deposit_request);
+    htr_container_list(f[4], er.builder_exits,    MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD,    htr_builder_exit_request);
+    htr_container(out, f, 5);
 }
 
 static void htr_execution_payload(uint8_t out[32], const SszExecutionPayload& p) {
@@ -405,7 +578,7 @@ static void htr_execution_payload(uint8_t out[32], const SszExecutionPayload& p)
     htr_uint64(f[16], p.excess_blob_gas);
     if (p.shape == PayloadShape::Gloas) {
         htr_byte_list(f[17], p.block_access_list.ptr, p.block_access_list.len,
-                      MAX_BLOCK_ACCESS_LIST_BYTES);
+                      p.bal_htr_limit);
         htr_uint64(f[18], p.slot_number);
         htr_container(out, f, 19);
     } else {
@@ -430,9 +603,6 @@ static void htr_new_payload_request(uint8_t out[32], const SszNewPayloadRequest&
     htr_container(out, f, 4);
 }
 
-// Canonical SSZ encoding of `ChainConfig::default()` in
-// stateless-validator-common v0.13.0: chain_id 0, Frontier fork, empty
-// activation lists, empty blob schedule. Used to mirror the Rust guests'
 // `StatelessValidationResult::default()` output when the input fails to
 // decode.
 static const uint8_t kDefaultChainConfigSsz[36] = {
@@ -456,24 +626,55 @@ static StatelessValidatorOutput default_failure_output() {
     return out;
 }
 
+// Default (simplified) ChainConfig of the Amsterdam rev-1 schema: chain_id 0,
+// empty activation lists. Confirmed byte-exact against tests-zkevm v0.6.2
+// negative fixtures (empty/truncated/unknown-schema inputs), which expect a
+// 61-byte output: zero root || 0x00 || offset 37 || these 24 bytes.
+static const uint8_t kDefaultChainConfigSszAmsterdam[24] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // chain_id = 0
+    0x0c, 0x00, 0x00, 0x00,                          // offset(active_fork) = 12
+    0x04, 0x00, 0x00, 0x00,                          // offset(activation) = 4
+    0x08, 0x00, 0x00, 0x00,                          // activation.block_number off = 8
+    0x08, 0x00, 0x00, 0x00,                          // activation.timestamp off = 8
+                                                     // (both lists empty)
+};
+
+static StatelessValidatorOutput default_failure_output_amsterdam() {
+    StatelessValidatorOutput out{};
+    out.successful_validation = false;
+    out.chain_config_ssz = kDefaultChainConfigSszAmsterdam;
+    out.chain_config_len = sizeof(kDefaultChainConfigSszAmsterdam);
+    return out;
+}
+
 StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
-    // Wire format (EIP-8025 / stateless_ssz.py): a 2-byte big-endian schema id
-    // followed by the SSZ-encoded SszStatelessInput. Strip and validate the
-    // prefix before decoding. A missing/wrong prefix or undecodable body means
-    // a malformed request: return the canonical default failure output (zero
-    // root, default chain config) — zkboost then rejects it on mismatch.
-    if (len < STATELESS_INPUT_SCHEMA_ID_SIZE ||
-        (static_cast<uint16_t>((data[0] << 8) | data[1]) != STATELESS_INPUT_SCHEMA_ID)) {
-        return default_failure_output();
+    // Wire format: a 2-byte big-endian schema id followed by the SSZ-encoded
+    // SszStatelessInput. Two schemas are supported:
+    //   0x0001 — legacy ere-guests v0.13.0 contract (fork-conditional payload,
+    //            rich ChainConfig); still used by zkboost.
+    //   0x1501 — tests-zkevm v0.6.x Amsterdam rev-1 (fork_index 0x15 << 8 |
+    //            revision 0x01); the payload shape is FIXED by the schema id.
+    // Anything else (including truncated/empty input) is a malformed request:
+    // return the Amsterdam default failure output (zero root, default
+    // simplified chain config), matching the v0.6.2 negative fixtures.
+    if (len < STATELESS_INPUT_SCHEMA_ID_SIZE) {
+        return default_failure_output_amsterdam();
     }
+    const uint16_t schema_id = static_cast<uint16_t>((data[0] << 8) | data[1]);
     data += STATELESS_INPUT_SCHEMA_ID_SIZE;
     len  -= STATELESS_INPUT_SCHEMA_ID_SIZE;
 
     ByteSpan input{data, len};
 
-    SszStatelessInput si = decode_stateless_input(input);
-    if (!si.valid) {
-        return default_failure_output();
+    SszStatelessInput si;
+    if (schema_id == STATELESS_INPUT_SCHEMA_ID) {
+        si = decode_stateless_input(input);
+        if (!si.valid) return default_failure_output();
+    } else if (schema_id == STATELESS_INPUT_SCHEMA_ID_AMSTERDAM01) {
+        si = decode_stateless_input_amsterdam01(input);
+        if (!si.valid) return default_failure_output_amsterdam();
+    } else {
+        return default_failure_output_amsterdam();
     }
 
     uint8_t npr_root[32];
@@ -491,6 +692,7 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     if (!validate_chain_config(si.chain_config,
                                si.new_payload_request.execution_payload.block_number,
                                si.new_payload_request.execution_payload.timestamp)) {
+        Z6M_DBG("z6m: validate_chain_config failed\n");
         return failure;
     }
 
@@ -526,11 +728,22 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     if (si.chain_config.fork >= FORK_OSAKA) chain_cfg.osaka_time = 0;
     if (si.chain_config.fork >= FORK_BPO1)  chain_cfg.bpo1_time  = 0;
     if (si.chain_config.fork >= FORK_BPO2)  chain_cfg.bpo2_time  = 0;
-    if (si.chain_config.fork >= FORK_AMSTERDAM) {
-        // Amsterdam EVM rules ride on the Osaka+BPO switches silkworm knows;
-        // refine when silkworm grows an explicit Amsterdam time switch.
+    // Amsterdam blob parameters differ per contract. tests-zkevm v0.6.x
+    // (Amsterdam01) uses {target 14, max 21, fraction 11684671} — silkworm's
+    // bpo2 entry, so no further BPO switch is set (bpo3/bpo4 carry fraction
+    // 13739630 and would break the blob base fee). The legacy v0.13.0 devnet
+    // schedule matches silkworm's bpo3/bpo4 entries (validated against a real
+    // devnet block), so the old switches are kept there. Refine when silkworm
+    // grows an explicit Amsterdam time switch.
+    if (si.schema == InputSchema::Legacy0001 &&
+        si.chain_config.fork >= FORK_AMSTERDAM) {
         chain_cfg.bpo3_time = 0;
         chain_cfg.bpo4_time = 0;
+    }
+    // Under the 0x1501 schema Amsterdam runs the real Amsterdam EVM rules
+    // (EIP-2780/7708/7778/8037/8038/7976/7981/8024/8246/7954).
+    if (si.schema == InputSchema::Amsterdam01) {
+        chain_cfg.amsterdam_time = 0;
     }
 
     if (wit.headers.size() > 256) {
@@ -549,6 +762,7 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         silkworm::ByteView rlp{wit.headers[i].ptr, wit.headers[i].len};
         silkworm::BlockHeader hdr;
         if (!silkworm::rlp::decode(rlp, hdr) || hdr.parent_hash != header_hashes[i - 1]) {
+            Z6M_DBG("z6m: header chain check failed at %zu\n", i);
             return failure;
         }
     }
@@ -595,12 +809,18 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     }
 
     // Load ancestor headers
+    Z6M_DBG("z6m: witness headers=%zu nodes=%zu codes=%zu txs=%zu block=%llu\n",
+            wit.headers.size(), wit.state.size(), wit.codes.size(),
+            ep.transactions.size(),
+            static_cast<unsigned long long>(ep.block_number));
     for (const ByteSpan& hs : wit.headers) {
         if (!hs.len) continue;
         silkworm::ByteView rlp{hs.ptr, hs.len};
         silkworm::Block anc;
         if (silkworm::rlp::decode(rlp, anc.header))
             state.insert_block(anc, anc.header.hash());
+        else
+            Z6M_DBG("z6m: ancestor header decode FAILED (len=%zu)\n", hs.len);
     }
 
     // Build parent/genesis block
@@ -636,6 +856,9 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         std::memcpy(pbr.bytes, si.new_payload_request.parent_beacon_block_root, 32);
         block.header.parent_beacon_block_root = pbr;
     }
+    // EIP-7843 (Amsterdam): the payload's slot number feeds SLOTNUM.
+    if (ep.shape == PayloadShape::Gloas)
+        block.header.slot_number = ep.slot_number;
 
     // Canonical payload transactions are raw EIP-2718 envelopes (a leading
     // type byte for typed txs, engine-API style) — NOT RLP-string-wrapped.
@@ -647,6 +870,8 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         silkworm::Transaction tx;
         silkworm::ByteView view{ts.ptr, ts.len};
         if (!silkworm::rlp::decode_transaction(view, tx, silkworm::rlp::Eip2718Wrapping::kBoth)) {
+            Z6M_DBG("z6m: tx decode failed (len=%zu, type=0x%02x)\n", ts.len,
+                    ts.len ? ts.ptr[0] : 0);
             return failure;
         }
         block.transactions.push_back(std::move(tx));
@@ -662,6 +887,28 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         block.withdrawals->push_back(w);
     }
 
+    // Requests hash (EIP-7685): the payload does not carry it, but the
+    // block-end system calls (EIP-7002/7251/8282 queue rotation) only run —
+    // and the input's execution_requests only get validated — when the
+    // header presents one. Compute it from the input's requests; execution
+    // then recomputes from logs + system calls and must match. The SSZ
+    // fixed encodings are exactly the flat per-type encodings.
+    // Gated to the Amsterdam01 schema to leave the validated legacy path
+    // untouched.
+    if (si.schema == InputSchema::Amsterdam01) {
+        const auto& er = si.new_payload_request.execution_requests;
+        silkworm::FlatRequests wanted;
+        auto add_req = [&wanted](silkworm::FlatRequestType t, const ByteSpan& raw) {
+            if (raw.len) wanted.add_request(t, silkworm::Bytes{raw.ptr, raw.len});
+        };
+        add_req(silkworm::FlatRequestType::kDepositRequest,        er.raw_deposits);
+        add_req(silkworm::FlatRequestType::kWithdrawalRequest,     er.raw_withdrawals);
+        add_req(silkworm::FlatRequestType::kConsolidationRequest,  er.raw_consolidations);
+        add_req(silkworm::FlatRequestType::kBuilderDepositRequest, er.raw_builder_deposits);
+        add_req(silkworm::FlatRequestType::kBuilderExitRequest,    er.raw_builder_exits);
+        block.header.requests_hash = wanted.calculate_sha256();
+    }
+
     // PoS blocks have no ommers; roots are computed from decoded body
     block.header.ommers_hash       = silkworm::kEmptyListHash;
     block.header.transactions_root = silkworm::protocol::compute_transaction_root(block);
@@ -670,6 +917,7 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
     // Execute block
     silkworm::protocol::Blockchain blockchain{state, chain_cfg, genesis};
     silkworm::ValidationResult res = blockchain.insert_block(block, /*check_state_root=*/false);
+    Z6M_DBG("z6m: insert_block result = 0x%02x\n", static_cast<unsigned>(res));
 
     if (res == silkworm::ValidationResult::kOk) {
         // Verify post-state root via incremental MPT delta rebuild
@@ -714,6 +962,7 @@ StatelessValidatorOutput run_stateless_guest(const uint8_t* data, size_t len) {
         silkworm::mpt::GridMPT<false> acc_trie{node_store, prev_root};
         computed_state_root = acc_trie.calc_root_from_updates(acc_updates);
         ok = (computed_state_root == block.header.state_root);
+        if (!ok) Z6M_DBG("z6m: state root mismatch\n");
     }
 
     StatelessValidatorOutput out{};

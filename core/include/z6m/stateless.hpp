@@ -1,3 +1,6 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /* z6m/stateless.hpp — Spec-compliant stateless guest API. */
 #pragma once
 #include <cstddef>
@@ -12,6 +15,12 @@ namespace z6m {
 /// `STATELESS_INPUT_SCHEMA_ID` / `STATELESS_INPUT_SCHEMA_ID_SIZE`.
 static constexpr uint16_t STATELESS_INPUT_SCHEMA_ID      = 0x0001;
 static constexpr size_t   STATELESS_INPUT_SCHEMA_ID_SIZE = 2;
+
+/// tests-zkevm v0.6.x schema id: `fork_index << 8 | revision`, big-endian.
+/// Amsterdam is fork_index 0x15 (1-based ProtocolFork numbering), revision 1.
+/// Under this schema the payload shape is FIXED by the id (no fork-conditional
+/// decode) and the ChainConfig is the simplified form (no fork/blob_schedule).
+static constexpr uint16_t STATELESS_INPUT_SCHEMA_ID_AMSTERDAM01 = 0x1501;
 
 /// Output mirroring `StatelessValidationResult` in ere-guests
 /// `stateless-validator-common` (tag v0.13.0):

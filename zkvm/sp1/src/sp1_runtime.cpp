@@ -1,5 +1,5 @@
 // Copyright 2026 The Zilkworm Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 /* SP1 zkVM runtime for pure C++ guest.
  *
@@ -21,7 +21,8 @@
    We provide a real bump-allocator _sbrk so newlib malloc works. */
 
 extern "C" {
-extern char _end;  /* linker-provided end of BSS */
+extern char _end;         /* linker-provided end of BSS */
+extern char _heap_start;  /* zkvm-standards heap base (linker script) */
 }
 
 static char *_heap_ptr = nullptr;
@@ -274,9 +275,10 @@ extern "C" int main();
 
 extern "C" void __start() {
     /* 0. Initialise _heap_ptr once, so _sbrk never needs a null check.
-       Align _end up to 8-byte boundary for rv64im ld/sd safety. */
+       _heap_start is the zkvm-standards heap base from the linker script;
+       align up to 8 bytes for rv64im ld/sd safety. */
     _heap_ptr = reinterpret_cast<char *>(
-        (reinterpret_cast<uintptr_t>(&_end) + 7) & ~uintptr_t(7));
+        (reinterpret_cast<uintptr_t>(&_heap_start) + 7) & ~uintptr_t(7));
 
     /* 1. Run C++ global constructors (static initialisers, atexit
        registrations, etc.).  Without this, any translation unit with
@@ -289,9 +291,34 @@ extern "C" void __start() {
     /* 2. Initialise the public-values buffer (hashed at halt time). */
     pv_buf_init();
 
-    /* 3. Call the guest program. */
-    main();
+    /* 3. Call the guest program and propagate its exit code
+       (zkvm-standards termination semantics: 0 = success, non-zero =
+       abnormal termination with the return value as error code). */
+    const int rc = main();
 
-    /* 4. Halt with success (never returns). */
-    syscall_halt(0);
+    /* 4. Halt (never returns). */
+    syscall_halt(static_cast<uint8_t>(rc));
+}
+
+/* ───────── zkvm-standards io-interface ─────────
+ * read_input: the first hint-stream vector, cached so the call is
+ * idempotent as the standard requires. write_output: append to the
+ * SP1 public-values stream. */
+static const uint8_t *g_input_ptr = nullptr;
+static size_t g_input_len = 0;
+static bool g_input_read = false;
+
+extern "C" void read_input(const uint8_t **buf_ptr, size_t *buf_size) {
+    if (!g_input_read) {
+        const ReadVecResult v = read_vec_raw();
+        g_input_ptr = v.ptr;
+        g_input_len = v.len;
+        g_input_read = true;
+    }
+    *buf_ptr = g_input_ptr;
+    *buf_size = g_input_len;
+}
+
+extern "C" void write_output(const uint8_t *output, size_t size) {
+    syscall_write(SP1_FD_PUBLIC_VALUES, output, size);
 }

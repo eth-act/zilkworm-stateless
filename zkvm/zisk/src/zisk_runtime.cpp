@@ -1,5 +1,5 @@
 // Copyright 2026 The Zilkworm Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 /* ZisK zkVM runtime for bare-metal C++ guest.
  *
@@ -32,11 +32,11 @@ uint32_t g_zisk_output_slot = 0;
 /* ─────────────────────────────────────────────────────────────────────────
  * Heap bump-allocator (_sbrk for newlib malloc)
  *
- * _end is the linker-provided symbol at the top of BSS (bottom of heap).
- * _init_stack_top is 256 KiB above _end; the heap grows upward toward the
- * stack.  For the short lifetime of a zkVM guest this is fine.
+ * _heap_start is the zkvm-standards heap base from the linker script,
+ * placed ABOVE the stack region so heap growth can never clobber stack
+ * frames (the heap previously started at _end, inside the stack region).
  * ───────────────────────────────────────────────────────────────────────── */
-extern "C" { extern char _end; }
+extern "C" { extern char _end; extern char _heap_start; }
 
 static char *_heap_ptr = nullptr;
 
@@ -98,6 +98,7 @@ extern void (*__init_array_end[])(void);
 
 /* Forward declaration of the guest entry point (main.cpp). */
 extern "C" int main();
+extern "C" void zkvm_io_flush();
 
 /* ─────────────────────────────────────────────────────────────────────────
  * __start — called from zisk_entrypoint.S after .data/.bss are ready
@@ -108,9 +109,10 @@ extern "C" int main();
  *  3. Halt the VM with exit code 0 (never returns).
  * ───────────────────────────────────────────────────────────────────────── */
 extern "C" [[noreturn]] void __start() {
-    /* 0. Heap base: align _end up to 8 bytes for rv64ima ld/sd safety. */
+    /* 0. Heap base: _heap_start (above the stack region), aligned up to
+       8 bytes for rv64ima ld/sd safety. */
     _heap_ptr = reinterpret_cast<char *>(
-        (reinterpret_cast<uintptr_t>(&_end) + 7) & ~uintptr_t(7));
+        (reinterpret_cast<uintptr_t>(&_heap_start) + 7) & ~uintptr_t(7));
 
     /* 1. C++ global constructors. */
     for (auto p = __preinit_array_start; p != __preinit_array_end; ++p)
@@ -118,9 +120,37 @@ extern "C" [[noreturn]] void __start() {
     for (auto p = __init_array_start; p != __init_array_end; ++p)
         if (*p) (*p)();
 
-    /* 2. Guest program. */
-    main();
+    /* 2. Guest program; propagate its exit code (zkvm-standards
+       termination semantics: 0 = success, non-zero = abnormal). */
+    const int rc = main();
 
-    /* 3. Halt with success. */
-    sys_halt(0);
+    /* Flush buffered standard-io output before halting. */
+    zkvm_io_flush();
+
+    /* 3. Halt (never returns). */
+    sys_halt(static_cast<uint8_t>(rc));
+}
+
+/* ───────── zkvm-standards io-interface ─────────
+ * read_input: the memory-mapped input region (zero-copy, idempotent).
+ * write_output: append into a buffer; flushed to the OUTPUT_ADDR slots
+ * after main returns (__start calls zkvm_io_flush). */
+static uint8_t g_output_buf[1024];
+static size_t g_output_len = 0;
+
+extern "C" void read_input(const uint8_t **buf_ptr, size_t *buf_size) {
+    const ZiskInputBuf in = read_input_raw();
+    *buf_ptr = in.ptr;
+    *buf_size = in.len;
+}
+
+extern "C" void write_output(const uint8_t *output, size_t size) {
+    size_t n = size;
+    if (g_output_len + n > sizeof(g_output_buf)) n = sizeof(g_output_buf) - g_output_len;
+    for (size_t i = 0; i < n; ++i) g_output_buf[g_output_len + i] = output[i];
+    g_output_len += n;
+}
+
+extern "C" void zkvm_io_flush() {
+    write_output_bytes(g_output_buf, g_output_len);
 }

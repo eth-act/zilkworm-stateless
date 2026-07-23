@@ -1,6 +1,6 @@
 /*
  * Copyright 2026 The Zilkworm Authors
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT OR Apache-2.0
  *
  * Linker script for ZisK zkVM bare-metal C++ guest (rv64ima).
  *
@@ -237,6 +237,13 @@ SECTIONS {
     . = ALIGN(16);
     . += 0x40000;
     _init_stack_top = .;
+
+    /* ─── Heap (zkvm-standards static-library-and-linker-script) ────────── */
+    /* Above the stack so heap growth can never clobber stack frames (the
+       previous _end-based heap base overlapped the stack region). */
+    . = ALIGN(16);
+    _heap_start = .;
+    _heap_end   = ORIGIN(RAM) + LENGTH(RAM);
 
     /* ─── Debug sections (zero VMA, not loaded) ─────────────────────────── */
     .stab          0 : { *(.stab) }

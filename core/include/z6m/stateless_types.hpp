@@ -1,3 +1,6 @@
+// Copyright 2026 The Zilkworm Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /* z6m/stateless_types.hpp — SSZ container types for Amsterdam stateless validation.
  *
  * Spec reference: stateless_ssz.py (Amsterdam fork)
@@ -42,13 +45,6 @@ static constexpr size_t MAX_BYTES_PER_HEADER                    = 1u << 10;
 static constexpr size_t MAX_PUBLIC_KEYS                         = 1u << 20;
 static constexpr size_t MAX_BYTES_PER_PUBLIC_KEY                = 65;
 
-// ─── Opaque byte-span view (no ownership) ────────────────────────────────────
-// Reuse ByteSpan from ssz.hpp.
-
-// ─── Decoded container structs ────────────────────────────────────────────────
-// These are lightweight views / decoded representations, not full SSZ containers.
-// Only the fields needed for hash_tree_root and logical processing are stored.
-
 // SszWithdrawal (spec §stateless_ssz.py::SszWithdrawal)
 struct SszWithdrawal {
     uint64_t index;
@@ -80,11 +76,36 @@ struct SszConsolidationRequest {
     uint8_t target_pubkey[48];
 };
 
-// SszExecutionRequests
+// SszBuilderDepositRequest (tests-zkevm v0.6.x Amsterdam schema, fixed 184)
+struct SszBuilderDepositRequest {
+    uint8_t  pubkey[48];
+    uint8_t  withdrawal_credentials[32];
+    uint64_t amount;
+    uint8_t  signature[96];
+};
+
+// SszBuilderExitRequest (tests-zkevm v0.6.x Amsterdam schema, fixed 68)
+struct SszBuilderExitRequest {
+    uint8_t source_address[20];
+    uint8_t pubkey[48];
+};
+
+// SszExecutionRequests — 3 lists under the legacy (0x0001) schema, 5 under
+// the Amsterdam rev-1 (0x1501) schema (adds builder deposits/exits).
 struct SszExecutionRequests {
-    std::vector<SszDepositRequest>       deposits;
-    std::vector<SszWithdrawalRequest>    withdrawals;
-    std::vector<SszConsolidationRequest> consolidations;
+    std::vector<SszDepositRequest>        deposits;
+    std::vector<SszWithdrawalRequest>     withdrawals;
+    std::vector<SszConsolidationRequest>  consolidations;
+    std::vector<SszBuilderDepositRequest> builder_deposits;
+    std::vector<SszBuilderExitRequest>    builder_exits;
+    bool                                  has_builder_requests{false};
+    // Raw wire bytes per list (the SSZ fixed encodings are exactly the
+    // EIP-7685 flat request encodings) — used for requests_hash.
+    ByteSpan raw_deposits{nullptr, 0};
+    ByteSpan raw_withdrawals{nullptr, 0};
+    ByteSpan raw_consolidations{nullptr, 0};
+    ByteSpan raw_builder_deposits{nullptr, 0};
+    ByteSpan raw_builder_exits{nullptr, 0};
 };
 
 // Payload container shape, selected by the active fork (stateless-validator-common
@@ -119,9 +140,12 @@ struct SszExecutionPayload {
     std::vector<SszWithdrawal> withdrawals;
     uint64_t             blob_gas_used;
     uint64_t             excess_blob_gas;
-    ByteSpan             block_access_list; // ByteList[MAX_BLOCK_ACCESS_LIST_BYTES] (Gloas only)
+    ByteSpan             block_access_list; // ByteList (Gloas only)
     uint64_t             slot_number;       // (Gloas only)
     PayloadShape         shape;
+    // BAL hash-tree-root byte limit: schema-dependent (legacy 0x0001: 2^24;
+    // Amsterdam rev-1 0x1501: 2^30 = MAX_BYTES_PER_TRANSACTION).
+    size_t               bal_htr_limit{MAX_BLOCK_ACCESS_LIST_BYTES};
 };
 
 // SszNewPayloadRequest
@@ -177,16 +201,21 @@ struct SszChainConfig {
     bool     valid;
 };
 
+// Wire schema of the input, dispatched on the 2-byte big-endian prefix.
+enum class InputSchema : uint8_t {
+    Legacy0001,   // ere-guests v0.13.0 contract (fork-conditional payload)
+    Amsterdam01,  // tests-zkevm v0.6.x: fork_index(0x15) << 8 | revision 0x01
+};
+
 // SszStatelessInput (top-level input container)
 struct SszStatelessInput {
     SszNewPayloadRequest   new_payload_request;
     SszExecutionWitness    witness;
     SszChainConfig         chain_config;
-    std::vector<ByteSpan>  public_keys; // List[ByteList[MAX_BYTES_PER_PUBLIC_KEY], MAX_PUBLIC_KEYS]
+    std::vector<ByteSpan>  public_keys; // 65-byte entries
+    InputSchema            schema{InputSchema::Legacy0001};
     bool                   valid;       // false → deterministic default failure output
 };
-
-// ─── SSZ fixed sizes for well-known structures (used during deserialization) ──
 
 // SszWithdrawal is fixed-size: 8+8+20+8 = 44 bytes
 static constexpr size_t SSZ_WITHDRAWAL_FIXED_SIZE = 44;

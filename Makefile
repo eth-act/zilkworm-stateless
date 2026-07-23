@@ -4,7 +4,7 @@ SHELL  = /bin/bash
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.logicalcpu)
 ROOT  := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
-.PHONY: all guest_sp1 guest_zisk guest_openvm test test-build clean
+.PHONY: all guest_sp1 guest_zisk guest_openvm test test-build clean bench
 
 all: guest_sp1 guest_zisk guest_openvm
 
@@ -28,6 +28,22 @@ guest_openvm:
 		-DCMAKE_TOOLCHAIN_FILE=$(ROOT)/zkvm/openvm/cmake/riscv32im-openvm.cmake \
 		-DCMAKE_BUILD_TYPE=Release
 	cmake --build $(ROOT)/build/openvm -j$(NPROC)
+
+# ── Benchmarks: execution-level cycle counts per zkVM ────────────────────────
+bench:
+	$(ROOT)/bench/run.sh
+
+# ── EEST stateless conformance (native host build) ───────────────────────────
+# Runs the exact guest entrypoint natively against EEST stateless fixtures.
+# Extract pairs first:  conformance vector-gen eest --fixtures <dir> --out-dir <pairs>
+conformance-native:
+	cmake -S $(ROOT)/conformance/native -B $(ROOT)/build/conformance \
+		-DCMAKE_BUILD_TYPE=Release
+	cmake --build $(ROOT)/build/conformance -j$(NPROC)
+
+# Usage: make conformance PAIRS=path/to/pairs
+conformance: conformance-native
+	$(ROOT)/build/conformance/z6m_conformance --pairs $(PAIRS)
 
 # ── EF blockchain test suite (native x86_64) ──────────────────────────────────
 test-build:

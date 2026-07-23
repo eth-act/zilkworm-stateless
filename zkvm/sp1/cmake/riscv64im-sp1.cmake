@@ -1,5 +1,5 @@
 # Copyright 2026 The Zilkworm Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Cross-compilation toolchain for SP1 zkVM guest (rv64im bare-metal).
 #
@@ -51,7 +51,8 @@ set(CMAKE_OBJCOPY      "${_RISCV_BIN}/riscv-none-elf-objcopy")
 
 set(BUILD_SHARED_LIBS OFF)
 
-set(_common_flags "-march=rv64im -mabi=lp64 -ffunction-sections -fdata-sections -fno-PIC")
+# Reproducible builds: strip absolute paths from __FILE__/debug info.
+set(_common_flags "-march=rv64im -mabi=lp64 -ffunction-sections -fdata-sections -fno-PIC -ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=build")
 set(_opt_flags    "-O3 -DNDEBUG -fno-stack-protector -fno-builtin-trap")
 set(_no_cxx       "-fno-exceptions -fno-rtti -fno-threadsafe-statics")
 

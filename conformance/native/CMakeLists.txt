@@ -1,12 +1,20 @@
+# Copyright 2026 The Zilkworm Authors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Native (host) conformance runner: executes the exact guest entrypoint
+# (z6m::run_stateless_guest) against EEST stateless fixtures and byte-compares
+# the public values with statelessOutputBytes. Fast tier of the EEST
+# conformance pipeline (per-PR CI); the zkVM tier reuses the int-test
+# harnesses on the same extracted pairs.
+
 cmake_minimum_required(VERSION 3.28)
 
-# CMP0169 is unknown on CMake < 3.30; guard so the policy is only set when available.
 if(POLICY CMP0169)
     cmake_policy(SET CMP0169 OLD)
 endif()
 include(FetchContent)
 
-# Fetch zilkworm (same tag as the guest build)
+# Fetch zilkworm (same tag as the guest builds)
 FetchContent_Declare(
     zilkworm
     GIT_REPOSITORY https://github.com/developeruche/zilkworm.git
@@ -19,52 +27,49 @@ if(NOT zilkworm_POPULATED)
     FetchContent_Populate(zilkworm)
 endif()
 
-# Bootstrap Cable (needed before project())
 include(${zilkworm_SOURCE_DIR}/third_party/evmone/cmake/cable/bootstrap.cmake)
 include(CableBuildType)
 cable_set_build_type(DEFAULT Release CONFIGURATION_TYPES Release)
 
-project(z6m_test C CXX)
+project(z6m_conformance C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(SILKWORM_MAIN_DIR "${zilkworm_SOURCE_DIR}")
 
-# Native (x86_64) build — no SP1 define, no bare-metal flags
+# Z6M_NATIVE_DEBUG enables stderr diagnostics at failure points in the guest
+# core AND the zilkworm engine (native runner only; guest builds never define
+# it). Must precede every add_subdirectory to reach all targets.
+add_compile_definitions(Z6M_NATIVE_DEBUG)
+
+# Native build — no zkVM defines, no bare-metal flags.
 set(_ZW_BIN "${CMAKE_BINARY_DIR}/zilkworm")
 add_subdirectory("${zilkworm_SOURCE_DIR}/third_party" "${_ZW_BIN}/third_party")
 add_subdirectory("${zilkworm_SOURCE_DIR}/zilk_core"   "${_ZW_BIN}/zilk_core")
 
-# nlohmann/json (already pulled in by zilkworm third-party; expose as target)
-# If not available as a cmake target, fetch it directly.
-if(NOT TARGET nlohmann_json::nlohmann_json)
-    FetchContent_Declare(
-        nlohmann_json
-        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    FetchContent_MakeAvailable(nlohmann_json)
-endif()
-
-add_executable(z6m_test
-    main.cpp
-    blockchain_test.cpp
+# z6m guest core (the exact code the guests run)
+add_subdirectory(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../core"
+    "${CMAKE_BINARY_DIR}/z6m_core"
 )
 
-target_include_directories(z6m_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
+add_executable(z6m_conformance
+    main.cpp
+)
+
+target_include_directories(z6m_conformance PRIVATE
     "${zilkworm_SOURCE_DIR}/third_party/evmone/lib"
 )
 
-target_link_libraries(z6m_test PRIVATE
+target_link_libraries(z6m_conformance PRIVATE
+    z6m_core
     silkworm_core
     silkworm_dev
     evmone
-    nlohmann_json::nlohmann_json
 )
 
-target_compile_options(z6m_test PRIVATE
+target_compile_options(z6m_conformance PRIVATE
     -Wall
     -Wno-unused-parameter
     -Wno-missing-field-initializers

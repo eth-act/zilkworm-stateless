@@ -1,6 +1,6 @@
 /*
  * Copyright 2026 The Zilkworm Authors
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
 /* Script for -n */
@@ -206,6 +206,12 @@ SECTIONS
     __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800,
 		            MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
   _end = .; PROVIDE (end = .);
+
+  /* Heap (zkvm-standards static-library-and-linker-script): from the end of
+     BSS up to the SP1 input region (MAX_MEMORY 2^37 minus the 2^34 input
+     carve-out used by the runtime's read_vec_raw bump allocator). */
+  _heap_start = ALIGN(8);
+  _heap_end   = 0x1C00000000;
   . = DATA_SEGMENT_END (.);
   /* Stabs debugging sections.  */
   .stab          0 : { *(.stab) }

@@ -72,6 +72,35 @@ jobs:
             build/zisk/z6m_guest.bin
             build/zisk/z6m_guest.text
           retention-days: 7
+  build-openvm:
+    name: Build OpenVM guest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install CMake 3.28+
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~3.28.0"
+
+      - name: Install xPack riscv-none-elf-gcc
+        run: |
+          npm install --location=global xpm@latest
+          xpm install @xpack-dev-tools/riscv-none-elf-gcc@latest --global
+
+      - name: Build OpenVM guest
+        run: make guest_openvm
+
+      - name: Upload OpenVM ELF artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: z6m_guest_openvm
+          path: |
+            build/openvm/z6m_guest.elf
+            build/openvm/z6m_guest.bin
+            build/openvm/z6m_guest.text
+          retention-days: 7
   ef-tests:
     name: EF blockchain tests
     runs-on: ubuntu-latest

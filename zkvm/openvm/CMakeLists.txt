@@ -1,5 +1,5 @@
 # Copyright 2026 The Zilkworm Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT OR Apache-2.0
 
 cmake_minimum_required(VERSION 3.28)
 
@@ -14,8 +14,9 @@ include(FetchContent)
 FetchContent_Declare(
     zilkworm
     GIT_REPOSITORY https://github.com/developeruche/zilkworm.git
-    GIT_TAG        feat/spec-v0.2
-    GIT_SHALLOW    TRUE
+    GIT_TAG        c3ebf73a8b9ba1957ee473d19c51cb6041c88f53 # feat/canonical-witness
+    # No GIT_SHALLOW: the pin is a commit on feat/canonical-witness, not on the
+    # default branch (master), so a shallow clone can't reach it — full clone.
 )
 
 FetchContent_GetProperties(zilkworm)
@@ -77,7 +78,8 @@ set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/openvm.xn")
 add_executable(z6m_guest
     src/openvm_entrypoint.S
     src/openvm_runtime.cpp
-    src/main.cpp
+    ../common/main.cpp
+    ../common/zkvm_accelerators.cpp
     src/atomic_stubs.c
     src/memcpy.cpp
     src/memmove.cpp
