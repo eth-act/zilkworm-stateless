@@ -98,7 +98,17 @@ jobs:
           export PATH="$HOME/.config/.zisk/bin:$HOME/.zisk/bin:$PATH"
           # `setup` is the ROM-merkle setup subcommand in ZisK v1.0.0-alpha
           # (renamed from the older `rom-setup`); -e/--elf selects the guest.
-          cargo-zisk setup -e build/zisk/z6m_guest.elf
+          # ziskup installs the proving key under ~/.config/.zisk, but
+          # `cargo-zisk setup` defaults to ~/.zisk/provingKey — so locate it
+          # and pass it explicitly via -k rather than relying on the default.
+          PK=$(find "$HOME/.config/.zisk" "$HOME/.zisk" -maxdepth 2 -type d -name provingKey 2>/dev/null | head -1)
+          if [ -z "$PK" ]; then
+            echo "::error::provingKey directory not found. ZisK install layout:"
+            find "$HOME/.config/.zisk" "$HOME/.zisk" -maxdepth 3 2>/dev/null | head -60
+            exit 1
+          fi
+          echo "Using ZisK proving key: $PK"
+          cargo-zisk setup -e build/zisk/z6m_guest.elf -k "$PK"
 
       - name: Generate program verifying key
         # Derived from the zkVM's own SDK (see keygen/src/main.rs) — no
