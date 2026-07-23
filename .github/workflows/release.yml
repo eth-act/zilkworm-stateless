@@ -96,7 +96,9 @@ jobs:
           # ziskup installs cargo-zisk under ~/.config/.zisk/bin (older layouts
           # used ~/.zisk/bin) — add both so we don't depend on the exact version.
           export PATH="$HOME/.config/.zisk/bin:$HOME/.zisk/bin:$PATH"
-          cargo-zisk rom-setup -e build/zisk/z6m_guest.elf
+          # `setup` is the ROM-merkle setup subcommand in ZisK v1.0.0-alpha
+          # (renamed from the older `rom-setup`); -e/--elf selects the guest.
+          cargo-zisk setup -e build/zisk/z6m_guest.elf
 
       - name: Generate program verifying key
         # Derived from the zkVM's own SDK (see keygen/src/main.rs) — no

@@ -8,7 +8,7 @@
 //!   sp1    — bincode-serialized `SP1VerifyingKey` from `Prover::setup`
 //!   zisk   — bincode-serialized `ProgramVK` from `GuestProgram::vk()`
 //!            (the ROM-merkle verkey). PREREQUISITE: the ROM merkle setup
-//!            must exist for this ELF — run `cargo-zisk rom-setup` (needs
+//!            must exist for this ELF — run `cargo-zisk setup` (needs
 //!            the ZisK proving key via ziskup) before invoking keygen
 //!   openvm — `AppVerifyingKey` from `Sdk::app_keygen`, written with
 //!            `openvm_sdk::fs` (the SDK's own serialization). The app
@@ -69,7 +69,7 @@ fn main() -> anyhow::Result<()> {
         let vk = program.vk().map_err(|e| {
             anyhow::anyhow!(
                 "zisk rom-merkle verkey: {e} \
-                 (run `cargo-zisk rom-setup -e <elf>` first — requires the \
+                 (run `cargo-zisk setup -e <elf>` first — requires the \
                  ZisK proving key installed via ziskup)"
             )
         })?;
