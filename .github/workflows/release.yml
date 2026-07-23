@@ -62,6 +62,13 @@ jobs:
       - name: Install Rust (for keygen)
         uses: dtolnay/rust-toolchain@stable
 
+      # sp1 keygen transitively builds sp1-prover-types, whose build script
+      # (prost-build) requires the protobuf compiler. Harmless for the others.
+      - name: Install protoc (keygen build dependency)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+
       # ZisK only: the ROM-merkle verkey requires the ZisK proving key and a
       # one-time rom-setup for this ELF (large download — free disk first).
       - name: Free up disk space (zisk)
@@ -74,8 +81,11 @@ jobs:
         if: matrix.zkvm == 'zisk'
         run: |
           # ZISK_VERSION must NOT carry a leading 'v' — ziskup adds it itself.
+          # GH_RUNNER=1 makes ziskup non-interactive: it forces the CPU build and
+          # installs the proving key (SETUP_KEY=proving) instead of prompting on
+          # /dev/tty, which doesn't exist on a CI runner.
           curl -sSfL https://raw.githubusercontent.com/0xPolygonHermez/zisk/main/ziskup/install.sh \
-            | ZISK_VERSION="${{ steps.ver.outputs.version }}" bash
+            | GH_RUNNER=1 ZISK_VERSION="${{ steps.ver.outputs.version }}" bash
           export PATH="$HOME/.zisk/bin:$PATH"
           cargo-zisk rom-setup -e build/zisk/z6m_guest.elf
 
