@@ -90,11 +90,13 @@ jobs:
 
           # The ZisK prover reserves >10 GB of buffers (plus ~2.8 GB of traces);
           # a standard runner has ~16 GB and gets OOM-killed. Add swap headroom.
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h; df -h /
+          # The runner already has an ACTIVE /swapfile, so allocate a second one
+          # at a different path (fallocate on the live /swapfile => Text busy).
+          sudo fallocate -l 16G /swapfile-zisk
+          sudo chmod 600 /swapfile-zisk
+          sudo mkswap /swapfile-zisk
+          sudo swapon /swapfile-zisk
+          swapon --show; free -h; df -h /
 
           # ZISK_VERSION must NOT carry a leading 'v' — ziskup adds it itself.
           # GH_RUNNER=1 makes ziskup non-interactive: it forces the CPU build and
