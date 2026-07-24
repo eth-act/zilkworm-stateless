@@ -32,7 +32,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        zkvm: [sp1, zisk, openvm]
+        # TEMP(ci-iteration): zisk-only while debugging the ZisK setup.
+        # RESTORE to [sp1, zisk, openvm] before merging to main.
+        zkvm: [zisk]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -86,7 +88,11 @@ jobs:
           # cargo-zisk links against the OpenMPI runtime (libmpi.so.40), which
           # isn't on the runner by default.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libopenmpi-dev openmpi-bin
+          # zisk-sdk's build script compiles pil2-stark's C++ in the keygen step:
+          # it needs nlohmann-json headers plus the usual pil2-stark build deps.
+          sudo apt-get install -y --no-install-recommends \
+            libopenmpi-dev openmpi-bin \
+            nlohmann-json3-dev libgmp-dev libsodium-dev libomp-dev nasm uuid-dev
 
           # The ZisK prover reserves >10 GB of buffers (plus ~2.8 GB of traces);
           # a standard runner has ~16 GB and gets OOM-killed. Add swap headroom.
@@ -153,6 +159,8 @@ jobs:
 
   ef-tests:
     name: EF blockchain tests
+    # TEMP(ci-iteration): skipped while debugging ZisK. RESTORE before merging.
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with ethereum-tests submodule)
@@ -180,6 +188,8 @@ jobs:
   # bit-identical ELF.
   reproducibility:
     name: Rebuild ${{ matrix.zkvm }} + compare sha256
+    # TEMP(ci-iteration): skipped while debugging ZisK. RESTORE before merging.
+    if: false
     runs-on: ubuntu-latest
     needs: [build]
     strategy:
@@ -226,6 +236,8 @@ jobs:
 
   release:
     name: Publish GitHub Release
+    # TEMP(ci-iteration): don't publish throwaway CI releases. RESTORE before merging.
+    if: false
     runs-on: ubuntu-latest
     needs: [build, ef-tests, reproducibility]  # all must succeed
     steps:
