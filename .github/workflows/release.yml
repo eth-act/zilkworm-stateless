@@ -86,19 +86,50 @@ jobs:
           # cargo-zisk links against the OpenMPI runtime (libmpi.so.40), which
           # isn't on the runner by default.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libopenmpi-dev openmpi-bin
+          # zisk-sdk's build script compiles pil2-stark's C++ in the keygen step:
+          # it needs nlohmann-json headers plus the usual pil2-stark build deps.
+          sudo apt-get install -y --no-install-recommends \
+            libopenmpi-dev openmpi-bin \
+            nlohmann-json3-dev libgmp-dev libsodium-dev libomp-dev nasm uuid-dev
+
+          # The ZisK prover reserves >10 GB of buffers (plus ~2.8 GB of traces);
+          # a standard runner has ~16 GB and gets OOM-killed. Add swap headroom.
+          # The runner already has an ACTIVE /swapfile, so allocate a second one
+          # at a different path (fallocate on the live /swapfile => Text busy).
+          sudo fallocate -l 16G /swapfile-zisk
+          sudo chmod 600 /swapfile-zisk
+          sudo mkswap /swapfile-zisk
+          sudo swapon /swapfile-zisk
+          swapon --show; free -h; df -h /
+
           # ZISK_VERSION must NOT carry a leading 'v' — ziskup adds it itself.
           # GH_RUNNER=1 makes ziskup non-interactive: it forces the CPU build and
           # installs the proving key (SETUP_KEY=proving) instead of prompting on
           # /dev/tty, which doesn't exist on a CI runner.
           curl -sSfL https://raw.githubusercontent.com/0xPolygonHermez/zisk/main/ziskup/install.sh \
             | GH_RUNNER=1 ZISK_VERSION="${{ steps.ver.outputs.version }}" bash
-          # ziskup installs cargo-zisk under ~/.config/.zisk/bin (older layouts
-          # used ~/.zisk/bin) — add both so we don't depend on the exact version.
+          # ziskup installs everything under ~/.config/.zisk, but cargo-zisk
+          # defaults to ~/.zisk. Symlink so the default layout is correct: this
+          # lets `setup` reuse the constant trees ziskup already generated
+          # instead of regenerating them (7+ min and the peak-memory phase).
+          if [ ! -e "$HOME/.zisk" ]; then
+            ln -s "$HOME/.config/.zisk" "$HOME/.zisk"
+          elif [ ! -e "$HOME/.zisk/provingKey" ] && [ -d "$HOME/.config/.zisk/provingKey" ]; then
+            # ~/.zisk exists but is partial — link just the proving key in.
+            ln -s "$HOME/.config/.zisk/provingKey" "$HOME/.zisk/provingKey"
+          fi
           export PATH="$HOME/.config/.zisk/bin:$HOME/.zisk/bin:$PATH"
+
+          if [ ! -d "$HOME/.zisk/provingKey" ]; then
+            echo "::error::provingKey not found. ZisK install layout:"
+            find "$HOME/.config/.zisk" "$HOME/.zisk" -maxdepth 3 2>/dev/null | head -60
+            exit 1
+          fi
+
           # `setup` is the ROM-merkle setup subcommand in ZisK v1.0.0-alpha
           # (renamed from the older `rom-setup`); -e/--elf selects the guest.
           cargo-zisk setup -e build/zisk/z6m_guest.elf
+          free -h
 
       - name: Generate program verifying key
         # Derived from the zkVM's own SDK (see keygen/src/main.rs) — no
